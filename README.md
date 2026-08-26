@@ -10,7 +10,9 @@ cargo run -- review --project ./paper --guidelines ./guidelines --output ./revie
 
 The project must contain a `main.tex` and `main.pdf` by default. Use `--main-tex` and `--pdf` to select different files. The command writes `findings.json` and `findings.md`.
 
-Provider settings can be supplied with `--provider` and `--model` or the `ADVISOR_REVIEW_PROVIDER`, `ADVISOR_REVIEW_MODEL`, and `ADVISOR_REVIEW_API_KEY` environment variables. Deterministic checks run without credentials; semantic checks are recorded as skipped until a compatible provider transport is available.
+Provider settings can be supplied with `--provider` and `--model` or the `ADVISOR_REVIEW_PROVIDER`, `ADVISOR_REVIEW_MODEL`, and `ADVISOR_REVIEW_API_KEY` environment variables. Deterministic checks run without credentials. Semantic checks use the configured hosted or Ollama-compatible provider and are reported as skipped when credentials or required capabilities are unavailable.
+
+For crates.io release instructions, see [PUBLISHING.md](PUBLISHING.md).
 
 ## Structured rules
 

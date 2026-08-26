@@ -1,9 +1,16 @@
 [package]
 name = "advisor-review"
 version = "0.1.0"
-edition = "2021"
+edition = "2026"
+rust-version = "1.84"
 description = "Local-first advisor review tooling for LaTeX manuscripts"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/imranur-rahman/advisor-review"
+homepage = "https://github.com/imranur-rahman/advisor-review"
+keywords = ["latex", "research", "manuscript", "review", "cli"]
+categories = ["command-line-utilities"]
+exclude = [".agents/", ".claude/", "openspec/"]
 
 [dependencies]
 anyhow = "1.0.95"
