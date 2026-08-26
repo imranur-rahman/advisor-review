@@ -1,0 +1,26 @@
+[package]
+name = "advisor-review"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first advisor review tooling for LaTeX manuscripts"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.95"
+clap = { version = "=4.5.2", features = ["derive"] }
+regex = "1.11.1"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.134"
+serde_yaml = "0.9.34"
+walkdir = "2.5.0"
+ureq = { version = "=2.12.1", features = ["json"] }
+idna = "=1.0.3"
+zeroize = "=1.8.1"
+
+[dev-dependencies]
+assert_cmd = "=2.0.16"
+tempfile = "=3.14.0"
+
+[[bin]]
+name = "advisor-review"
+path = "src/main.rs"
