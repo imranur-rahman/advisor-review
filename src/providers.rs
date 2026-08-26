@@ -1,6 +1,6 @@
 use crate::config::ProviderConfig;
 use crate::model::{DocumentTarget, ReviewFinding, ReviewIssue, RuleDefinition};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 pub trait SemanticProvider {
@@ -52,7 +52,12 @@ impl SemanticProvider for ConfiguredProvider {
                 "openrouter" => "https://openrouter.ai/api/v1/chat/completions".into(),
                 _ => "https://api.openai.com/v1/chat/completions".into(),
             });
-        let prompt = format!("Evaluate this manuscript target against the rule. Return JSON only with keys status, evidence, explanation, suggestion, confidence. Rule: {}. Target type: {}. Text: {}", rule.description.as_deref().unwrap_or(""), target.target_type, target.text);
+        let prompt = format!(
+            "Evaluate this manuscript target against the rule. Return JSON only with keys status, evidence, explanation, suggestion, confidence. Rule: {}. Target type: {}. Text: {}",
+            rule.description.as_deref().unwrap_or(""),
+            target.target_type,
+            target.text
+        );
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(30))
             .build();

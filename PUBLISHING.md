@@ -29,7 +29,7 @@ The publishable metadata lives in `[package]` in `Cargo.toml`:
 | `homepage` | GitHub repository URL | The project homepage changes. |
 | `readme` | `README.md` | The package landing documentation moves. |
 | `license` | `MIT` | Only if the project's licensing changes. Keep `LICENSE` consistent. |
-| `rust-version` | `1.84` | The minimum supported Rust version changes. |
+| `rust-version` | `1.85` | The minimum supported Rust version changes. The repository pins Rust 1.85.0 in `rust-toolchain.toml`. |
 | `keywords` | LaTeX/research/manuscript/review/CLI | Search terms change; crates.io allows at most five. |
 | `categories` | `command-line-utilities` | The package's crates.io category changes. |
 | `exclude` | Local agent/OpenSpec files | Files that should not be shipped change. |

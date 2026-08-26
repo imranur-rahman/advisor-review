@@ -14,7 +14,13 @@ pub fn write(report: &ReviewReport, output: &Path) -> Result<()> {
 }
 
 pub fn markdown(report: &ReviewReport) -> String {
-    let mut out = format!("# Manuscript Review\n\n- Project: `{}`\n- Main LaTeX: `{}`\n- PDF: `{}`\n- Findings: {}\n\n", report.project, report.main_tex, report.pdf, report.findings.len());
+    let mut out = format!(
+        "# Manuscript Review\n\n- Project: `{}`\n- Main LaTeX: `{}`\n- PDF: `{}`\n- Findings: {}\n\n",
+        report.project,
+        report.main_tex,
+        report.pdf,
+        report.findings.len()
+    );
     if report.findings.is_empty() {
         out.push_str("No findings were produced.\n");
     }
@@ -51,5 +57,20 @@ fn finding_markdown(f: &ReviewFinding) -> String {
         .pdf
         .as_ref()
         .map(|p| format!("page {} ({})", p.page, p.mapping_quality));
-    format!("## {} `{}`\n\n**Target:** {} `{}`  \n**Source:** `{}`{}  \n**Evidence:** {}\n\n{}\n\n{}\n\n", f.severity, f.rule_id, f.target.target_type, f.target.id, source, pdf.map(|p| format!("  \n**PDF:** {}", p)).unwrap_or_default(), f.evidence, f.explanation, f.suggestion.as_deref().map(|s| format!("**Suggestion:** {}", s)).unwrap_or_default())
+    format!(
+        "## {} `{}`\n\n**Target:** {} `{}`  \n**Source:** `{}`{}  \n**Evidence:** {}\n\n{}\n\n{}\n\n",
+        f.severity,
+        f.rule_id,
+        f.target.target_type,
+        f.target.id,
+        source,
+        pdf.map(|p| format!("  \n**PDF:** {}", p))
+            .unwrap_or_default(),
+        f.evidence,
+        f.explanation,
+        f.suggestion
+            .as_deref()
+            .map(|s| format!("**Suggestion:** {}", s))
+            .unwrap_or_default()
+    )
 }
