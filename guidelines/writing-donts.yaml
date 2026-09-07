@@ -1,0 +1,45 @@
+# Repository-authored editorial checks; see writing-donts.md for attribution.
+# Each rule is self-contained because Markdown candidates are not prompt context.
+rules:
+  - id: writing.paragraph.filler
+    name: Remove redundant prose
+    scope: paragraph
+    kind: semantic-text
+    severity: suggestion
+    context: neighbors
+    description: >-
+      Identify sentences that repeat a point without adding evidence, qualification,
+      or necessary explanation. Cite the redundant passage and suggest a specific
+      cut or consolidation without changing the scientific claim. Preserve useful
+      definitions and reader orientation. Assess writing quality, never AI authorship;
+      do not flag punctuation or vocabulary alone.
+    check: {type: semantic}
+
+  - id: writing.section.repetition
+    name: Avoid unhelpful structural repetition
+    scope: section
+    kind: semantic-text
+    severity: suggestion
+    include_subsections: true
+    description: >-
+      Identify repeated rhetorical or paragraph structures only when they obscure
+      the argument or add redundant material. Cite multiple examples supporting
+      the pattern and explain the reader impact. Preserve parallel descriptions
+      needed for scientific comparison and conventional section organization.
+      Assess writing quality, never AI authorship; do not flag punctuation or
+      vocabulary alone.
+    check: {type: semantic}
+
+  - id: writing.sentence.metaphor
+    name: Clarify misleading metaphors
+    scope: sentence
+    kind: semantic-text
+    severity: suggestion
+    context: paragraph
+    description: >-
+      Identify figurative comparisons that misrepresent the described mechanism
+      or obscure its meaning. Cite the comparison and explain where it fails;
+      suggest a literal clarification without inventing facts. Preserve established
+      technical terminology and useful explanatory analogies. Assess writing
+      quality, never AI authorship; do not flag punctuation or vocabulary alone.
+    check: {type: semantic}
