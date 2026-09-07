@@ -1,0 +1,14 @@
+rules:
+  - id: prose.avoid-very
+    scope: paragraph
+    kind: text
+    check:
+      type: forbid
+      pattern: very
+      message: Replace vague intensifiers.
+  - id: document.introduction
+    scope: document
+    kind: text
+    check:
+      type: contains
+      pattern: Introduction

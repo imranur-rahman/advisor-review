@@ -1,5 +1,6 @@
 use std::fs;
 use std::process::Command;
+mod common;
 
 #[test]
 fn review_writes_json_and_markdown_findings() {
@@ -14,10 +15,13 @@ fn review_writes_json_and_markdown_findings() {
         "\\section{Intro}\nThis is very vague.\n",
     )
     .unwrap();
-    fs::write(project.join("main.pdf"), b"%PDF-1.7\n").unwrap();
+    common::write_pdf(&project.join("main.pdf"));
     fs::write(guidelines.join("advisor.yaml"), "id: prose.avoid-very\nscope: paragraph\nkind: text\nseverity: warning\ncheck:\n  type: forbid\n  pattern: very\n  message: Avoid vague intensifiers.\n  suggestion: Replace it with a measurable claim.\n").unwrap();
 
     let result = Command::new(env!("CARGO_BIN_EXE_advisor-review"))
+        .env_remove("ADVISOR_REVIEW_PROVIDER")
+        .env_remove("ADVISOR_REVIEW_MODEL")
+        .env_remove("ADVISOR_REVIEW_ENDPOINT")
         .args(["review", "--project"])
         .arg(&project)
         .args(["--guidelines"])

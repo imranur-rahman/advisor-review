@@ -59,6 +59,7 @@ pub struct RuleCheck {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RuleDefinition {
     pub id: String,
     #[serde(default)]
@@ -148,6 +149,12 @@ pub struct ReviewReport {
 }
 
 impl ReviewReport {
+    pub fn is_incomplete(&self) -> bool {
+        self.issues
+            .iter()
+            .any(|issue| !matches!(issue.kind.as_str(), "pdf_mapping" | "not_applicable"))
+    }
+
     pub fn new(project: String, main_tex: String, pdf: String, provider: ProviderMetadata) -> Self {
         Self {
             schema_version: SCHEMA_VERSION.to_string(),

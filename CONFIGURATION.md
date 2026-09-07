@@ -13,7 +13,7 @@ cargo install advisor-review
 advisor-review --help
 ```
 
-Install an exact release with `cargo install advisor-review --version 0.1.0`.
+Install an exact release with `cargo install advisor-review --version 0.1.1`.
 
 ### From source
 
@@ -46,12 +46,12 @@ advisor-review review \
 | `--project <PATH>`, `-p` | `.` | LaTeX project directory. |
 | `--guidelines <PATH>`, `-g` | `guidelines` | Directory containing guideline files. |
 | `--output <PATH>`, `-o` | `review` | Output directory; created when needed. |
-| `--main-tex <PATH>` | `<project>/main.tex` | Main LaTeX source. If missing, a `.tex` file is searched for. |
+| `--main-tex <PATH>` | `<project>/main.tex` | Main source. Without an explicit override, a single discovered `.tex` file can be used as fallback; multiple candidates require this flag. |
 | `--pdf <PATH>` | `<project>/main.pdf` | Compiled PDF. The tool does not compile LaTeX. |
 | `--provider <NAME>` | environment | Semantic provider name. |
-| `--model <NAME>` | environment | Provider-specific model name. |
+| `--model <NAME>` | environment | Required when a provider is selected; no built-in model fallback. |
 
-Paths for `--guidelines` and `--output` are relative to the current working directory. The default manuscript files are resolved under `--project`.
+Paths for `--guidelines` and `--output` are relative to the current working directory. Default manuscript files and relative `--main-tex` / `--pdf` overrides are resolved under `--project`; absolute overrides are used directly. An explicitly missing source is an error and never triggers fallback discovery.
 
 Show all generated options with:
 
@@ -120,6 +120,14 @@ rules:
 
 Required fields are `id`, `scope`, `kind`, and `check.type`. Optional fields are `name`, `description`, `severity`, `priority`, `check.pattern`, `check.value`, `check.message`, `check.suggestion`, and `requires`.
 
+Supported kinds are `text`, `asset`, `structure`, `semantic-text`, `semantic-vision`, and `cross-modal`. Severities are `error`, `warning`, `suggestion`, and `info`. Text checks require a nonempty pattern; regex syntax is validated before execution. Asset checks require figure scope and a positive threshold (`min_pixels` requires an integer). Semantic kinds require `check.type: semantic` and a nonempty description. Provider capability requirements (`requires`) apply only to semantic rules. Unknown rule fields and check parameters are errors.
+
+Invalid definitions are reported individually while other valid rules continue. Duplicate IDs are rejected across all loaded files. An empty executable rule set produces an incomplete review.
+
+### Conflicts and priorities
+
+Literal `contains` and `forbid` rules conflict when their scope, kind, and pattern are identical. The highest-priority rule determines which condition executes; opposing rules are suppressed. Opposing conditions tied at the highest priority cause the group to be skipped with an issue. Independent rules are not conflicts merely because their scope is the same. Conflicts and resolutions appear in JSON and Markdown. Arbitrary semantic or regex contradictions are not inferred.
+
 ### Markdown guidelines
 
 Plain Markdown prose becomes a candidate and is not silently activated. Explicit rules can be embedded in `rule` fenced blocks:
@@ -147,10 +155,13 @@ Candidates appear under `Rule Candidates` in the report and are not executed aut
 ### Rule scopes
 
 ```text
-document, section, paragraph, sentence, figure, table,
-table_row, table_cell, equation, code_block, code_line,
-citation, reference, pdf_page
+document, section, paragraph, figure, table, table_cell,
+equation, code_block, citation, reference, environment
 ```
+
+`code` is an alias for `code_block`. `document` evaluates once against aggregate, comment-stripped LaTeX source, including visited input files; it has no single source span. It is not rendered plain text. Figure targets include their enclosing figure environment, caption, and label when present.
+
+`sentence`, `table_row`, `code_line`, and `pdf_page` are recognized but not extracted yet. Rules using them are explicitly skipped and make the review incomplete. A supported scope with no matching targets produces a `not_applicable` issue. Missing pixel dimensions or effective DPI produce a skipped check, never an implicit pass.
 
 ### Deterministic check types
 
@@ -170,8 +181,10 @@ Deterministic checks do not require a provider or API key. Semantic checks use h
 Provider/model precedence is:
 
 ```text
-CLI flag > environment variable > built-in fallback
+CLI flag > environment variable
 ```
+
+With no provider selected, only deterministic rules run. Selecting a provider requires an explicit model through the CLI or environment. Unknown provider names are rejected before any network request. Provider names are case-insensitive. For a compatible custom service, select one of the supported provider formats and set its endpoint.
 
 Credential precedence is:
 
@@ -226,9 +239,9 @@ export ADVISOR_REVIEW_ENDPOINT=http://localhost:11434/v1/chat/completions
 advisor-review review
 ```
 
-OpenAI-compatible requests are used for OpenAI, OpenRouter, Ollama, and custom endpoints. Anthropic uses its Messages API format. Provider responses must contain structured JSON with `status`, `evidence`, `explanation`, `suggestion`, and optionally `confidence`.
+OpenAI-compatible requests are used for OpenAI, OpenRouter, Ollama, and compatible custom endpoints. Anthropic uses its Messages API format. Provider responses must contain structured JSON with `status`, nonempty `evidence`, and nonempty `explanation`. `suggestion` and `confidence` are optional. Status must be `pass`, `violation`, `concern`, `suggestion`, or `uncertain`; confidence must be between 0 and 1. Invalid responses become review issues. Requests have a 30-second timeout; HTTP failures preserve completed findings.
 
-Vision-language rules are skipped unless the provider advertises the required capability. API keys are never written to reports.
+The current adapters support semantic text only. Vision-language and cross-modal rules are explicitly skipped. Credentials and configured endpoint values are redacted from configuration debug output; transport errors do not echo endpoint URLs.
 
 ## Output files
 
@@ -249,8 +262,10 @@ Findings can contain manuscript excerpts, file paths, and provider metadata. Tre
 | Exit code | Meaning |
 |---:|---|
 | `0` | Review completed; findings may still be present. |
-| `1` | Processing, parsing, provider, or output failure. |
-| `2` | Invalid project or missing `main.tex`, `main.pdf`, or guideline directory. |
+| `1` | Processing/output failure, or an incomplete review: invalid rules, unresolved conflicts, missing evidence, skipped capabilities, or provider errors. |
+| `2` | Invalid provider/model configuration, invalid project, ambiguous entry point, or missing source/PDF/guideline directory. |
+
+For rule and provider failures, both reports are still written with completed findings and issues. Input parsing and output failures can prevent report creation. General PDF mapping limitations and `not_applicable` issues alone do not change the exit code. Zero findings is not evidence of a complete review: check the exit status and issues.
 
 Common fixes:
 
@@ -262,7 +277,9 @@ Common fixes:
 
 ## Current analysis limits
 
-The tool validates and inspects basic PDF page structure but does not compile LaTeX. Full visual layout analysis, OCR, exact PDF-to-source mapping, and vision-language figure review are future extensions. Unavailable mappings are reported as limitations rather than exact locations.
+The tool parses the PDF catalog and page tree using `lopdf` and rejects unreadable, encrypted, and page-less documents. It does not compile LaTeX or validate every PDF content operator. Every report states that source-to-PDF mapping, rendered layout, and page text checks are unavailable. No approximate or exact PDF anchors are invented.
+
+LaTeX analysis handles common line-oriented commands, comments (including escaped percent signs), balanced environments, and literal listing bodies. Input paths are resolved from the project root; missing includes fail with their source location. Each source file is visited once. Extensionless graphics resolve common PDF/PNG/JPEG assets, but `graphicspath`, TeX macro expansion, conditional compilation, environments split across files, and arbitrary command syntax are not fully interpreted. Full visual analysis, OCR, and vision-language review remain future extensions.
 
 ## Privacy
 

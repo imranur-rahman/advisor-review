@@ -21,11 +21,25 @@ pub fn markdown(report: &ReviewReport) -> String {
         report.pdf,
         report.findings.len()
     );
+    if report.is_incomplete() {
+        out.push_str("**Review incomplete:** some rules could not be evaluated. See Review Issues below.\n\n");
+    }
     if report.findings.is_empty() {
         out.push_str("No findings were produced.\n");
     }
     for finding in &report.findings {
         out.push_str(&finding_markdown(finding));
+    }
+    if !report.conflicts.is_empty() {
+        out.push_str("## Rule Conflicts\n\n");
+        for conflict in &report.conflicts {
+            out.push_str(&format!(
+                "- {}: {}\n",
+                conflict.rule_ids.join(", "),
+                conflict.resolution
+            ));
+        }
+        out.push('\n');
     }
     if !report.candidates.is_empty() {
         out.push_str("## Rule Candidates\n\n");

@@ -27,6 +27,8 @@ review/findings.json
 review/findings.md
 ```
 
+Exit code `0` means the configured review completed (findings may still exist). Exit code `1` means failure or an incomplete review; inspect the reports for invalid rules, skipped checks, or provider errors. Invalid inputs/configuration return `2`. Semantic review requires both a provider and an explicit model.
+
 For complete CLI, rule, provider, output, and troubleshooting documentation, see [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Build from source
@@ -40,8 +42,11 @@ cargo run -- review --project ./paper --guidelines ./guidelines --output ./revie
 Run tests with:
 
 ```bash
-cargo test
+cargo test --locked
+cargo fmt --all -- --check
 ```
+
+Tests include a manuscript fixture, generated valid PDFs, and local mock HTTP providers. No live provider credentials are needed. CI runs the suite on Linux and macOS with Rust 1.85.0.
 
 ## Publishing
 

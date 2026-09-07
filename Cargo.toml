@@ -1,6 +1,6 @@
 [package]
 name = "advisor-review"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Local-first advisor review tooling for LaTeX manuscripts"
@@ -23,6 +23,7 @@ walkdir = "2.5.0"
 ureq = { version = "=2.12.1", features = ["json"] }
 idna = "=1.0.3"
 zeroize = "=1.8.1"
+lopdf = { version = "=0.35.0", default-features = false, features = ["nom_parser"] }
 
 [dev-dependencies]
 assert_cmd = "=2.0.16"

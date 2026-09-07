@@ -23,7 +23,7 @@ The publishable metadata lives in `[package]` in `Cargo.toml`:
 | Field | Current value | Change when |
 |---|---|---|
 | `name` | `advisor-review` | Only before the first release, or when intentionally publishing a differently named crate. |
-| `version` | `0.1.0` | Every release; follow Semantic Versioning. |
+| `version` | `0.1.1` | Every release; follow Semantic Versioning. |
 | `description` | Local-first advisor review tooling for LaTeX manuscripts | The package's public purpose changes. |
 | `repository` | GitHub repository URL | The canonical source repository changes. |
 | `homepage` | GitHub repository URL | The project homepage changes. |
@@ -75,7 +75,7 @@ git push origin main --tags
 cargo publish
 ```
 
-Replace `<VERSION>` with the exact value in `Cargo.toml`, such as `0.1.0`. The `cargo publish --dry-run` step must pass before uploading.
+Replace `<VERSION>` with the exact value in `Cargo.toml`, such as `0.1.1`. The `cargo publish --dry-run` step must pass before uploading.
 
 ## After publishing
 

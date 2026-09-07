@@ -74,6 +74,11 @@ fn run_review(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<i32> {
+    let provider_config = ProviderConfig::from_values(provider, model);
+    if let Err(err) = provider_config.validate() {
+        eprintln!("error: {err}");
+        return Ok(2);
+    }
     let inputs = match discover::discover(
         &project,
         &guidelines_dir,
@@ -89,7 +94,6 @@ fn run_review(
     let mut registry = guidelines::load(&inputs.guidelines)?;
     let targets = latex::parse_project(&inputs.main_tex, &inputs.project)?;
     let pdf_info = pdf::inspect(&inputs.pdf)?;
-    let provider_config = ProviderConfig::from_values(provider, model);
     let provider_adapter = provider_config.name.as_ref().map(|_| ConfiguredProvider {
         config: provider_config.clone(),
     });
@@ -105,8 +109,13 @@ fn run_review(
         message,
         rule_id: None,
     }));
-    if pdf_info.page_count == 0 {
-        issues.push(ReviewIssue { kind: "pdf_mapping".into(), message: "PDF page structure could not be extracted; rendered anchors are unavailable or approximate".into(), rule_id: None });
+    issues.push(ReviewIssue { kind: "pdf_mapping".into(), message: format!("PDF validated ({} pages); source-to-PDF mapping is {}. Rendered layout and page text checks are not implemented.", pdf_info.page_count, pdf_info.mapping_quality), rule_id: None });
+    if registry.active.is_empty() {
+        issues.push(ReviewIssue {
+            kind: "skipped".into(),
+            message: "no executable rules were loaded; review is incomplete".into(),
+            rule_id: None,
+        });
     }
     let mut result = ReviewReport::new(
         inputs.project.display().to_string(),
@@ -124,5 +133,13 @@ fn run_review(
         result.findings.len(),
         output.display()
     );
-    Ok(0)
+    if result.is_incomplete() {
+        eprintln!(
+            "review incomplete: see review issues in {}/findings.json",
+            output.display()
+        );
+        Ok(1)
+    } else {
+        Ok(0)
+    }
 }

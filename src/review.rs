@@ -1,4 +1,4 @@
-use crate::guidelines::RuleRegistry;
+use crate::guidelines::{RuleRegistry, validate_rule};
 use crate::model::{DocumentTarget, ReviewFinding, ReviewIssue, RuleDefinition};
 use crate::providers::SemanticProvider;
 use regex::Regex;
@@ -13,17 +13,63 @@ pub fn run(
     let mut issues = vec![];
     let mut seq = 0;
     for rule in &registry.active {
-        for target in targets
+        if let Err(err) = validate_rule(rule) {
+            issues.push(rule_issue(
+                "guideline",
+                rule,
+                format!("invalid rule: {err}"),
+            ));
+            continue;
+        }
+        if matches!(
+            rule.scope.as_str(),
+            "sentence" | "table_row" | "code_line" | "pdf_page"
+        ) {
+            issues.push(rule_issue(
+                "skipped",
+                rule,
+                format!("scope {} is not yet extracted", rule.scope),
+            ));
+            continue;
+        }
+        let scoped: Vec<_> = targets
             .iter()
             .filter(|t| in_scope(&rule.scope, &t.target_type))
-        {
-            if rule.kind == "semantic-text"
-                || rule.kind == "semantic-vision"
-                || rule.kind == "cross-modal"
-            {
+            .collect();
+        if scoped.is_empty() {
+            issues.push(rule_issue(
+                "not_applicable",
+                rule,
+                format!("no {} targets were found", rule.scope),
+            ));
+            continue;
+        }
+        let semantic = matches!(
+            rule.kind.as_str(),
+            "semantic-text" | "semantic-vision" | "cross-modal"
+        );
+        if semantic && !provider.is_some_and(|p| p.can_handle(rule)) {
+            issues.push(rule_issue(
+                "skipped",
+                rule,
+                "provider capability or credentials unavailable".into(),
+            ));
+            continue;
+        }
+        let regex = if rule.check.check_type == "regex" {
+            Some(Regex::new(rule.check.pattern.as_deref().unwrap()).expect("validated regex"))
+        } else {
+            None
+        };
+        for target in scoped {
+            if semantic {
                 match provider {
                     Some(p) if p.can_handle(rule) => match p.review(rule, target) {
-                        Ok(Some(f)) => findings.push(f),
+                        Ok(Some(mut f)) => {
+                            f.id = format!("finding-{seq}");
+                            seq += 1;
+                            findings.push(f);
+                        }
                         Ok(None) => {}
                         Err(mut e) => {
                             e.rule_id = Some(rule.id.clone());
@@ -39,9 +85,19 @@ pub fn run(
                         rule_id: Some(rule.id.clone()),
                     }),
                 }
-            } else if let Some(f) = deterministic(rule, target, seq) {
-                seq += 1;
-                findings.push(f);
+            } else {
+                match deterministic(rule, target, seq, regex.as_ref()) {
+                    Ok(Some(f)) => {
+                        seq += 1;
+                        findings.push(f);
+                    }
+                    Ok(None) => {}
+                    Err(message) => issues.push(rule_issue(
+                        "skipped",
+                        rule,
+                        format!("{}: {message}", target.id),
+                    )),
+                }
             }
         }
     }
@@ -49,25 +105,30 @@ pub fn run(
 }
 
 fn in_scope(scope: &str, target: &str) -> bool {
-    scope == "document" || scope == target || (scope == "code" && target == "code_block")
+    scope == target || (scope == "code" && target == "code_block")
+}
+
+fn rule_issue(kind: &str, rule: &RuleDefinition, message: String) -> ReviewIssue {
+    ReviewIssue {
+        kind: kind.into(),
+        message,
+        rule_id: Some(rule.id.clone()),
+    }
 }
 
 fn deterministic(
     rule: &RuleDefinition,
     target: &DocumentTarget,
     seq: usize,
-) -> Option<ReviewFinding> {
+    regex: Option<&Regex>,
+) -> Result<Option<ReviewFinding>, String> {
     let check = &rule.check;
     let kind = check.check_type.as_str();
     let mut evidence = target.text.clone();
     let matched;
     match kind {
         "regex" => {
-            let pattern = check.pattern.as_deref().unwrap_or_default();
-            matched = Regex::new(pattern)
-                .ok()
-                .map(|r| r.is_match(&target.text))
-                .unwrap_or(false);
+            matched = regex.expect("compiled regex").is_match(&target.text);
         }
         "forbid" => {
             matched = check
@@ -89,32 +150,40 @@ fn deterministic(
                 .facts
                 .get("pixel_width")
                 .and_then(Value::as_u64)
-                .unwrap_or(0)
-                * target
-                    .facts
-                    .get("pixel_height")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
+                .filter(|v| *v > 0)
+                .ok_or("pixel width unavailable")?
+                .checked_mul(
+                    target
+                        .facts
+                        .get("pixel_height")
+                        .and_then(Value::as_u64)
+                        .filter(|v| *v > 0)
+                        .ok_or("pixel height unavailable")?,
+                )
+                .ok_or("pixel area overflow")?;
             matched = pixels > 0 && pixels < min;
             evidence = format!("{} pixels", pixels);
         }
         "min_effective_dpi" => {
             let min = check.value.as_ref().and_then(Value::as_f64).unwrap_or(0.0);
-            let dpi = target.facts.get("effective_dpi").and_then(Value::as_f64);
-            matched = dpi.map(|v| v < min).unwrap_or(false);
-            evidence = dpi
-                .map(|v| format!("{v:.1} DPI"))
-                .unwrap_or_else(|| "effective DPI unavailable".into());
+            let dpi = target
+                .facts
+                .get("effective_dpi")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .ok_or("effective DPI unavailable")?;
+            matched = dpi < min;
+            evidence = format!("{dpi:.1} DPI");
         }
         "environment_exists" => {
-            matched = target.target_type == "environment";
+            matched = target.facts.contains_key("environment");
         }
-        _ => return None,
+        _ => return Err(format!("unsupported check: {kind}")),
     }
     if !matched {
-        return None;
+        return Ok(None);
     }
-    Some(ReviewFinding {
+    Ok(Some(ReviewFinding {
         id: format!("finding-{seq}"),
         rule_id: rule.id.clone(),
         source_guideline: rule.source.clone(),
@@ -129,5 +198,5 @@ fn deterministic(
             .or_else(|| rule.description.clone())
             .unwrap_or_else(|| "Rule condition matched".into()),
         suggestion: check.suggestion.clone(),
-    })
+    }))
 }

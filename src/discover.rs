@@ -25,36 +25,37 @@ pub fn discover(
             guidelines.display()
         );
     }
-    let main_tex = main_tex
-        .map(PathBuf::from)
-        .unwrap_or_else(|| project.join("main.tex"));
-    let main_tex = if main_tex.is_absolute() {
-        main_tex
-    } else {
-        project.join(main_tex)
-    };
+    let project = project
+        .canonicalize()
+        .context("resolve project directory")?;
+    let explicit_main = main_tex.is_some();
+    let mut main_tex = project.join(main_tex.unwrap_or_else(|| Path::new("main.tex")));
     if !main_tex.is_file() {
-        let candidate = WalkDir::new(project)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path().to_path_buf())
-            .find(|p| p.extension().and_then(|e| e.to_str()) == Some("tex"));
-        match candidate {
-            Some(path) => return discover(project, guidelines, Some(&path), pdf),
-            None => bail!(
+        if explicit_main {
+            bail!(
+                "explicit main LaTeX source not found: {}",
+                main_tex.display()
+            );
+        }
+        let mut candidates = Vec::new();
+        for entry in WalkDir::new(&project).sort_by_file_name() {
+            let entry = entry.context("search project for LaTeX source")?;
+            if entry.file_type().is_file()
+                && entry.path().extension().and_then(|e| e.to_str()) == Some("tex")
+            {
+                candidates.push(entry.into_path());
+            }
+        }
+        match candidates.as_slice() {
+            [path] => main_tex = path.clone(),
+            [] => bail!(
                 "main LaTeX source not found; expected {}",
                 main_tex.display()
             ),
+            _ => bail!("multiple LaTeX sources found; select the entry point with --main-tex"),
         }
     }
-    let pdf = pdf
-        .map(PathBuf::from)
-        .unwrap_or_else(|| project.join("main.pdf"));
-    let pdf = if pdf.is_absolute() {
-        pdf
-    } else {
-        project.join(pdf)
-    };
+    let pdf = project.join(pdf.unwrap_or_else(|| Path::new("main.pdf")));
     if !pdf.is_file() {
         bail!("compiled PDF not found; expected {}", pdf.display());
     }

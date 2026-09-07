@@ -11,14 +11,14 @@ fn parses_included_and_specialized_targets() {
     fs::write(project.join("main.tex"), "\\input{body}\n").unwrap();
     fs::write(
         project.join("body.tex"),
-        r#"\\section{Results}
-\\begin{tabular}{cc}
-one & two \\\\
-\\end{tabular}
-See \\cite{smith} and Figure~\\ref{fig:x}.
-\\begin{lstlisting}
+        r#"\section{Results}
+\begin{tabular}{cc}
+one & two \\
+\end{tabular}
+See \cite{smith} and Figure~\ref{fig:x}.
+\begin{lstlisting}
 const x = 1;
-\\end{lstlisting}
+\end{lstlisting}
 "#,
     )
     .unwrap();
