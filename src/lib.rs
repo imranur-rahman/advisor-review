@@ -2,6 +2,7 @@ pub mod config;
 pub mod discover;
 pub mod guidelines;
 pub mod latex;
+pub mod manuscript;
 pub mod model;
 pub mod pdf;
 pub mod providers;

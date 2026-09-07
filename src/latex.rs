@@ -1,6 +1,6 @@
-use crate::discover::read_text;
+use crate::manuscript::{self, SourceDocument};
 use crate::model::{DocumentTarget, SourceSpan, TargetAnchor};
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use regex::Regex;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -8,40 +8,21 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub fn parse_project(main: &Path, project: &Path) -> Result<Vec<DocumentTarget>> {
+    let source = SourceDocument::load(main, project)?;
     let mut targets = vec![];
-    let mut visited = vec![];
-    let mut document = String::new();
-    parse_file(main, project, &mut visited, &mut targets, &mut document)?;
-    targets.push(DocumentTarget {
-        id: "document".into(),
-        target_type: "document".into(),
-        text: document,
-        ..Default::default()
+    parse_flat(&source.content.text, project, &mut targets)?;
+    targets.retain(|t| {
+        !matches!(t.target_type.as_str(), "document" | "section" | "paragraph")
+            && t.facts.get("environment").and_then(|v| v.as_str()) != Some("document")
     });
     let mut ids = std::collections::HashSet::new();
     targets.retain(|target| ids.insert(target.id.clone()));
-    Ok(targets)
+    manuscript::build(&source, targets)
 }
 
-fn parse_file(
-    path: &Path,
-    project: &Path,
-    visited: &mut Vec<PathBuf>,
-    targets: &mut Vec<DocumentTarget>,
-    document: &mut String,
-) -> Result<()> {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    if visited.contains(&canonical) {
-        return Ok(());
-    }
-    visited.push(canonical);
-    let content = read_text(path)?;
-    let rel = path
-        .strip_prefix(project)
-        .unwrap_or(path)
-        .display()
-        .to_string();
-    let cleaned = clean_lines(&content);
+fn parse_flat(content: &str, project: &Path, targets: &mut Vec<DocumentTarget>) -> Result<()> {
+    let rel = "expanded".to_string();
+    let cleaned = clean_lines(content);
     let lines: Vec<&str> = cleaned.iter().map(String::as_str).collect();
     let env_re = Regex::new(r"\\begin\{([A-Za-z*]+)\}")?;
     let label_re = Regex::new(r"\\label\{([^}]+)\}")?;
@@ -55,8 +36,6 @@ fn parse_file(
     let mut paragraph = String::new();
     for (idx, line) in lines.iter().enumerate() {
         let line_no = idx + 1;
-        document.push_str(line);
-        document.push('\n');
         // Literal code must not be interpreted as TeX or ordinary prose.
         if spans
             .iter()
@@ -80,10 +59,12 @@ fn parse_file(
                         file: rel.clone(),
                         start_line: line_no,
                         end_line: line_no,
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },
                 facts: BTreeMap::new(),
+                ..Default::default()
             });
         }
         for cap in include_re.captures_iter(line) {
@@ -94,12 +75,7 @@ fn parse_file(
                 line_no.saturating_sub(1),
                 targets,
             );
-            let mut child = project.join(&cap[1]);
-            if child.extension().is_none() {
-                child.set_extension("tex");
-            }
-            parse_file(&child, project, visited, targets, document)
-                .with_context(|| format!("include at {rel}:{line_no}"))?;
+            let _ = cap;
         }
         for cap in graphics_re.captures_iter(line) {
             let asset = resolve_asset(project, &cap[2]);
@@ -135,11 +111,13 @@ fn parse_file(
                         file: rel.clone(),
                         start_line: start + 1,
                         end_line: end + 1,
+                        ..Default::default()
                     }),
                     asset: Some(asset.display().to_string()),
                     ..Default::default()
                 },
                 facts,
+                ..Default::default()
             });
         }
         for cap in cite_re.captures_iter(line) {
@@ -153,10 +131,12 @@ fn parse_file(
                         file: rel.clone(),
                         start_line: line_no,
                         end_line: line_no,
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },
                 facts: BTreeMap::new(),
+                ..Default::default()
             });
         }
         for cap in ref_re.captures_iter(line) {
@@ -170,10 +150,12 @@ fn parse_file(
                         file: rel.clone(),
                         start_line: line_no,
                         end_line: line_no,
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },
                 facts: BTreeMap::new(),
+                ..Default::default()
             });
         }
         for cap in env_re.captures_iter(line) {
@@ -211,10 +193,12 @@ fn parse_file(
                             file: rel.clone(),
                             start_line: line_no,
                             end_line: end,
+                            ..Default::default()
                         }),
                         ..Default::default()
                     },
                     facts: BTreeMap::from([(String::from("environment"), json!(env))]),
+                    ..Default::default()
                 });
             }
             if kind == "table" {
@@ -231,6 +215,7 @@ fn parse_file(
                                         file: rel.clone(),
                                         start_line: line_no + offset,
                                         end_line: line_no + offset,
+                                        ..Default::default()
                                     }),
                                     ..Default::default()
                                 },
@@ -238,6 +223,7 @@ fn parse_file(
                                     String::from("column"),
                                     json!(column + 1),
                                 )]),
+                                ..Default::default()
                             });
                         }
                     }
@@ -317,10 +303,12 @@ fn flush_paragraph(
                         file: file.into(),
                         start_line: s,
                         end_line: end.max(s),
+                        ..Default::default()
                     }),
                     ..Default::default()
                 },
                 facts: BTreeMap::new(),
+                ..Default::default()
             });
         }
     }

@@ -245,3 +245,127 @@ fn findings_receive_unique_ids_across_targets_and_rule_kinds() {
         4
     );
 }
+
+#[test]
+fn contextual_requests_return_multiple_findings_with_validated_source_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("main.tex"),
+        "\\section{Results}\nIt improved. The measured gain was 5%.",
+    )
+    .unwrap();
+    let targets =
+        advisor_review::latex::parse_project(&dir.path().join("main.tex"), dir.path()).unwrap();
+    let sentence = targets
+        .iter()
+        .find(|t| t.target_type == "sentence")
+        .unwrap();
+    let paragraph = targets
+        .iter()
+        .find(|t| t.target_type == "paragraph")
+        .unwrap();
+    let rule: RuleDefinition = serde_yaml::from_str("id: clarity\nscope: sentence\ncontext: paragraph\nkind: semantic-text\ndescription: Check clarity.\ncheck: {type: semantic}").unwrap();
+    let body = json!({"summary":"Two clarity issues", "findings":[
+        {"status":"concern", "explanation":"Unclear referent", "evidence":[{"target_id":sentence.id,"quote":"It","start":0}]},
+        {"status":"suggestion", "explanation":"Specify what improved", "evidence":[{"target_id":paragraph.id,"quote":"measured gain"}]}
+    ]}).to_string();
+    for name in ["openai", "anthropic", "openrouter", "ollama"] {
+        let envelope = if name == "anthropic" {
+            json!({"content":[{"text":body}]})
+        } else {
+            json!({"choices":[{"message":{"content":body}}]})
+        };
+        let (endpoint, server) = mock(200, envelope.to_string());
+        let result = provider(name, endpoint)
+            .review_context(&rule, sentence, &[paragraph.clone()], "direct", 32768)
+            .unwrap();
+        assert_eq!(result.findings.len(), 2);
+        assert!(result.findings.iter().all(|f| f.target.id == sentence.id));
+        assert_eq!(
+            result.findings[0].evidence_spans[0].sources[0].start_line,
+            2
+        );
+        let request = server.join().unwrap();
+        let prompt = request["messages"][0]["content"].as_str().unwrap();
+        let payload: Value = serde_json::from_str(prompt.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(payload["target"]["text"], sentence.text);
+        assert_eq!(payload["context"][0]["text"], paragraph.text);
+    }
+}
+
+#[test]
+fn contextual_evidence_rejects_unknown_ids_hallucinations_and_bad_offsets() {
+    for evidence in [
+        json!({"target_id":"unknown","quote":"Caption"}),
+        json!({"target_id":"figure-1","quote":"not in text"}),
+        json!({"target_id":"figure-1","quote":"Caption","start":1}),
+        json!({"target_id":"figure-1","quote":""}),
+    ] {
+        let content = json!({"summary":"Issue", "findings":[{"status":"concern","explanation":"Problem","evidence":[evidence]}]}).to_string();
+        let (endpoint, server) = mock(
+            200,
+            json!({"choices":[{"message":{"content":content}}]}).to_string(),
+        );
+        assert_eq!(
+            provider("openai", endpoint)
+                .review_context(&rule(), &target(), &[], "direct", 32768)
+                .unwrap_err()
+                .kind,
+            "provider_response"
+        );
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn overlapping_quotes_require_offsets_and_unicode_offsets_are_checked() {
+    for (text, quote, start, accepted) in [
+        ("aaa", "aa", None, false),
+        ("aaa", "aa", Some(1), true),
+        ("ééé", "éé", None, false),
+        ("ééé", "éé", Some(1), false),
+        ("ééé", "éé", Some(2), true),
+    ] {
+        let mut cited_target = target();
+        cited_target.text = text.into();
+        let evidence = json!({"target_id":cited_target.id,"quote":quote,"start":start});
+        let content = json!({"summary":"Issue", "findings":[{"status":"concern","explanation":"Problem","evidence":[evidence]}]}).to_string();
+        let (endpoint, server) = mock(
+            200,
+            json!({"choices":[{"message":{"content":content}}]}).to_string(),
+        );
+        let result = provider("openai", endpoint).review_context(
+            &rule(),
+            &cited_target,
+            &[],
+            "direct",
+            32768,
+        );
+        server.join().unwrap();
+        assert_eq!(result.is_ok(), accepted, "text={text:?}, start={start:?}");
+    }
+}
+
+#[test]
+fn contextual_budget_is_checked_before_network_and_empty_findings_pass() {
+    let p = provider("openai", "http://127.0.0.1:1".into());
+    assert_eq!(
+        p.review_context(&rule(), &target(), &[], "direct", 1)
+            .unwrap_err()
+            .kind,
+        "budget"
+    );
+    let content = json!({"summary":"Rule met", "findings":[]}).to_string();
+    let (endpoint, server) = mock(
+        200,
+        json!({"choices":[{"message":{"content":content}}]}).to_string(),
+    );
+    assert!(
+        provider("openai", endpoint)
+            .review_context(&rule(), &target(), &[], "direct", 32768)
+            .unwrap()
+            .findings
+            .is_empty()
+    );
+    server.join().unwrap();
+}

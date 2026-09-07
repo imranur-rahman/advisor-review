@@ -72,7 +72,14 @@ pub fn load(dir: &Path) -> Result<RuleRegistry> {
     for rule in &registry.active {
         if matches!(rule.check.check_type.as_str(), "contains" | "forbid") {
             groups
-                .entry((&rule.scope, &rule.kind, &rule.check.pattern))
+                .entry((
+                    &rule.scope,
+                    &rule.kind,
+                    &rule.check.pattern,
+                    &rule.section,
+                    &rule.text_view,
+                    rule.include_subsections,
+                ))
                 .or_insert_with(Vec::new)
                 .push(rule);
         }
@@ -184,6 +191,9 @@ fn add_rule(value: Value, source: &str, registry: &mut RuleRegistry) -> Result<(
     if rule.scope == "code" {
         rule.scope = "code_block".into();
     }
+    if rule.scope == "manuscript" {
+        rule.scope = "document".into();
+    }
     validate_rule(&rule).with_context(|| format!("invalid rule {} in {source}", rule.id))?;
     rule.source = Some(source.into());
     rule.active = true;
@@ -197,6 +207,8 @@ pub fn validate_rule(rule: &RuleDefinition) -> Result<()> {
         matches!(
             rule.scope.as_str(),
             "document"
+                | "manuscript"
+                | "heading"
                 | "section"
                 | "paragraph"
                 | "sentence"
@@ -215,6 +227,29 @@ pub fn validate_rule(rule: &RuleDefinition) -> Result<()> {
         ),
         "unknown scope: {}",
         rule.scope
+    );
+    ensure!(
+        matches!(rule.text_view.as_str(), "prose" | "source"),
+        "text_view must be prose or source"
+    );
+    ensure!(
+        matches!(
+            rule.context.as_str(),
+            "none" | "paragraph" | "neighbors" | "section"
+        ),
+        "context must be none, paragraph, neighbors, or section"
+    );
+    ensure!(
+        rule.section.as_deref().is_none_or(|s| !s.trim().is_empty()),
+        "section selector cannot be empty"
+    );
+    ensure!(
+        rule.scope != "document" && rule.scope != "manuscript" || rule.section.is_none(),
+        "document scope cannot select a section"
+    );
+    ensure!(
+        rule.include_subsections || rule.scope == "section",
+        "include_subsections: false requires section scope"
     );
     ensure!(
         matches!(
@@ -298,6 +333,9 @@ pub fn validate_rule(rule: &RuleDefinition) -> Result<()> {
 fn conflicts(a: &RuleDefinition, b: &RuleDefinition) -> bool {
     a.scope == b.scope
         && a.kind == b.kind
+        && a.section == b.section
+        && a.text_view == b.text_view
+        && a.include_subsections == b.include_subsections
         && a.check.pattern == b.check.pattern
         && matches!(
             (a.check.check_type.as_str(), b.check.check_type.as_str()),

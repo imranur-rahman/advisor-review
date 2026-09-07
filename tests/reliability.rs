@@ -240,7 +240,7 @@ fn missing_includes_are_not_silently_ignored() {
 fn unsupported_scopes_and_missing_asset_evidence_are_explicit() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("main.tex"), "\\includegraphics{missing}").unwrap();
-    fs::write(root.path().join("rules.yaml"), "rules:\n  - id: pixels\n    scope: figure\n    kind: asset\n    check: {type: min_pixels, value: 100}\n  - id: sentence\n    scope: sentence\n    kind: text\n    check: {type: forbid, pattern: vague}\n").unwrap();
+    fs::write(root.path().join("rules.yaml"), "rules:\n  - id: pixels\n    scope: figure\n    kind: asset\n    check: {type: min_pixels, value: 100}\n  - id: page\n    scope: pdf_page\n    kind: text\n    check: {type: forbid, pattern: vague}\n").unwrap();
     let targets = latex::parse_project(&root.path().join("main.tex"), root.path()).unwrap();
     let registry = guidelines::load(root.path()).unwrap();
     let (findings, issues) = review::run(&targets, &registry, None);
@@ -282,7 +282,7 @@ fn no_rules_and_unavailable_semantic_provider_are_incomplete() {
                 .unwrap();
         assert_eq!(
             report.issues.iter().filter(|i| i.kind == "skipped").count(),
-            1
+            if rules == "rules: []" { 1 } else { 2 }
         );
     }
 }

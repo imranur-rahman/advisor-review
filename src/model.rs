@@ -2,13 +2,34 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "2.0";
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct SourceSpan {
     pub file: String,
     pub start_line: usize,
     pub end_line: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_byte: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_byte: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_column: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TextMapping {
+    pub start: usize,
+    pub end: usize,
+    pub source: SourceSpan,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MappedText {
+    pub text: String,
+    pub mappings: Vec<TextMapping>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -21,6 +42,8 @@ pub struct PdfAnchor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TargetAnchor {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SourceSpan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceSpan>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,6 +63,24 @@ pub struct DocumentTarget {
     pub anchor: TargetAnchor,
     #[serde(default)]
     pub facts: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub order: usize,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub depth: Option<usize>,
+    #[serde(default)]
+    pub raw_text: String,
+    #[serde(default)]
+    pub text_mappings: Vec<TextMapping>,
+    #[serde(default)]
+    pub raw_mappings: Vec<TextMapping>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_prose: Option<MappedText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_source: Option<MappedText>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -58,7 +99,7 @@ pub struct RuleCheck {
     pub parameters: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuleDefinition {
     pub id: String,
@@ -82,6 +123,46 @@ pub struct RuleDefinition {
     pub check: RuleCheck,
     #[serde(default)]
     pub active: bool,
+    #[serde(default = "default_text_view")]
+    pub text_view: String,
+    #[serde(default = "default_context")]
+    pub context: String,
+    #[serde(default)]
+    pub section: Option<String>,
+    #[serde(default = "default_true")]
+    pub include_subsections: bool,
+}
+
+impl Default for RuleDefinition {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: None,
+            scope: String::new(),
+            kind: String::new(),
+            severity: default_severity(),
+            priority: 0,
+            description: None,
+            source: None,
+            requires: vec![],
+            check: RuleCheck::default(),
+            active: false,
+            text_view: default_text_view(),
+            context: default_context(),
+            section: None,
+            include_subsections: true,
+        }
+    }
+}
+
+fn default_text_view() -> String {
+    "prose".into()
+}
+fn default_context() -> String {
+    "none".into()
+}
+fn default_true() -> bool {
+    true
 }
 
 fn default_severity() -> String {
@@ -118,6 +199,40 @@ pub struct ReviewFinding {
     pub explanation: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+    #[serde(default)]
+    pub evidence_spans: Vec<EvidenceReference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvidenceReference {
+    pub target_id: String,
+    pub quote: String,
+    pub start: usize,
+    pub end: usize,
+    pub sources: Vec<SourceSpan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScopeCoverage {
+    pub selected: bool,
+    pub targets: usize,
+    pub rules: usize,
+    pub evaluations: usize,
+    pub completed: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub partial: usize,
+    pub not_applicable: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvaluationRecord {
+    pub rule_id: String,
+    pub target_id: Option<String>,
+    pub scope: String,
+    pub status: String,
+    pub findings: usize,
+    pub text_view: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -146,6 +261,12 @@ pub struct ReviewReport {
     pub candidates: Vec<RuleCandidate>,
     pub conflicts: Vec<RuleConflict>,
     pub issues: Vec<ReviewIssue>,
+    #[serde(default)]
+    pub targets: Vec<DocumentTarget>,
+    #[serde(default)]
+    pub coverage: BTreeMap<String, ScopeCoverage>,
+    #[serde(default)]
+    pub evaluations: Vec<EvaluationRecord>,
 }
 
 impl ReviewReport {
@@ -166,6 +287,9 @@ impl ReviewReport {
             candidates: vec![],
             conflicts: vec![],
             issues: vec![],
+            targets: vec![],
+            coverage: BTreeMap::new(),
+            evaluations: vec![],
         }
     }
 }

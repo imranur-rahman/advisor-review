@@ -38,6 +38,10 @@ enum Command {
         provider: Option<String>,
         #[arg(long)]
         model: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        scopes: Vec<String>,
+        #[arg(long, default_value_t = 32768)]
+        max_input_bytes: usize,
     },
 }
 
@@ -52,7 +56,20 @@ fn main() -> Result<()> {
             pdf,
             provider,
             model,
-        }) => run_review(project, guidelines, output, main_tex, pdf, provider, model)?,
+            scopes,
+            max_input_bytes,
+        }) => run_review(
+            project,
+            guidelines,
+            output,
+            main_tex,
+            pdf,
+            ProviderConfig::from_values(provider, model),
+            review::ReviewOptions {
+                scopes,
+                max_input_bytes,
+            },
+        )?,
         None => {
             Cli::command().print_help()?;
             println!();
@@ -71,10 +88,13 @@ fn run_review(
     output: PathBuf,
     main_tex: Option<PathBuf>,
     pdf: Option<PathBuf>,
-    provider: Option<String>,
-    model: Option<String>,
+    provider_config: ProviderConfig,
+    options: review::ReviewOptions,
 ) -> Result<i32> {
-    let provider_config = ProviderConfig::from_values(provider, model);
+    if let Err(err) = options.validate() {
+        eprintln!("error: {err}");
+        return Ok(2);
+    }
     if let Err(err) = provider_config.validate() {
         eprintln!("error: {err}");
         return Ok(2);
@@ -97,23 +117,25 @@ fn run_review(
     let provider_adapter = provider_config.name.as_ref().map(|_| ConfiguredProvider {
         config: provider_config.clone(),
     });
-    let (findings, mut issues) = review::run(
+    let run = review::run_with_options(
         &targets,
         &registry,
         provider_adapter
             .as_ref()
             .map(|p| p as &dyn advisor_review::providers::SemanticProvider),
+        &options,
     );
+    let mut issues = run.issues;
     issues.extend(registry.issues.drain(..).map(|message| ReviewIssue {
         kind: "guideline".into(),
         message,
         rule_id: None,
     }));
     issues.push(ReviewIssue { kind: "pdf_mapping".into(), message: format!("PDF validated ({} pages); source-to-PDF mapping is {}. Rendered layout and page text checks are not implemented.", pdf_info.page_count, pdf_info.mapping_quality), rule_id: None });
-    if registry.active.is_empty() {
+    if run.coverage.values().all(|c| c.rules == 0) {
         issues.push(ReviewIssue {
             kind: "skipped".into(),
-            message: "no executable rules were loaded; review is incomplete".into(),
+            message: "no executable rules matched the selected scopes; review is incomplete".into(),
             rule_id: None,
         });
     }
@@ -123,7 +145,10 @@ fn run_review(
         inputs.pdf.display().to_string(),
         provider_config.metadata(),
     );
-    result.findings = findings;
+    result.findings = run.findings;
+    result.coverage = run.coverage;
+    result.evaluations = run.evaluations;
+    result.targets = targets;
     result.candidates = registry.candidates;
     result.conflicts = registry.conflicts;
     result.issues = issues;
