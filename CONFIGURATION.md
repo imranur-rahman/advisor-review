@@ -49,9 +49,10 @@ advisor-review review \
 | `--main-tex <PATH>` | `<project>/main.tex` | Main source. Without an explicit override, a single discovered `.tex` file can be used as fallback; multiple candidates require this flag. |
 | `--pdf <PATH>` | `<project>/main.pdf` | Compiled PDF. The tool does not compile LaTeX. |
 | `--provider <NAME>` | environment | Semantic provider name. |
-| `--model <NAME>` | environment | Required when a provider is selected; no built-in model fallback. |
+| `--model <NAME>` | environment | Model for the selected provider; optional for Claude Code and Codex CLI (uses their configured default). |
 | `--scopes <LIST>` | all scopes | Comma-separated scopes, e.g. `sentence,paragraph,section,manuscript`. |
 | `--max-input-bytes <N>` | `32768` | Maximum UTF-8 bytes per semantic prompt, including instructions and context; minimum `1024`. |
+| `--format <FORMAT>` | `text` | Terminal output format: `text` or `vscode` diagnostics. JSON and Markdown reports are always written. |
 
 Paths for `--guidelines` and `--output` are relative to the current working directory. Default manuscript files and relative `--main-tex` / `--pdf` overrides are resolved under `--project`; absolute overrides are used directly. An explicitly missing source is an error and never triggers fallback discovery.
 
@@ -61,6 +62,46 @@ Show all generated options with:
 advisor-review --help
 advisor-review review --help
 ```
+
+### Show findings in VS Code
+
+VS Code can turn task output into clickable entries in the Problems panel. Install `advisor-review` so it is available on `PATH`, then copy this task into the manuscript workspace's `.vscode/tasks.json` (adjust the guideline directory if needed):
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Review manuscript",
+      "type": "process",
+      "command": "advisor-review",
+      "args": [
+        "review",
+        "--project", "${workspaceFolder}",
+        "--guidelines", "${workspaceFolder}/guidelines",
+        "--output", "${workspaceFolder}/review",
+        "--format", "vscode"
+      ],
+      "problemMatcher": {
+        "owner": "advisor-review",
+        "source": "advisor-review",
+        "applyTo": "allDocuments",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+)\\((\\d+),(\\d+)\\): (error|warning|info): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    }
+  ]
+}
+```
+
+Run **Tasks: Run Task → Review manuscript**. Findings with source locations appear in Problems; selecting one opens the corresponding LaTeX file and line. Messages include the rule, status, explanation, evidence, and existing suggestion when available. They are advisory: the task does not edit the manuscript or write replacement text. Findings without source locations remain in `findings.md` and `findings.json`. Incomplete reviews can return exit code `1`; use the reports to inspect skipped or failed checks.
 
 Expected project layout:
 
@@ -129,6 +170,8 @@ Invalid definitions are reported individually while other valid rules continue. 
 ### Conflicts and priorities
 
 Literal `contains` and `forbid` rules conflict when their scope, kind, pattern, section selector, text view, and subsection policy are identical. The highest-priority rule determines which condition executes; opposing rules are suppressed. Opposing conditions tied at the highest priority cause the group to be skipped with an issue. Independent rules are not conflicts merely because their scope is the same. Conflicts and resolutions appear in JSON and Markdown. Arbitrary semantic or regex contradictions are not inferred.
+
+Instruction precedence is deliberately limited to these layers: CLI provider/model options override environment variables; only structured rules and explicit Markdown `rule` blocks execute (ordinary Markdown stays a candidate); and `priority` resolves detected literal-rule conflicts. A manuscript is review input, not an instruction source. Semantic rules can still disagree in meaning; the tool does not infer or rank those conflicts, so rewrite them as distinct, testable rules or resolve them manually.
 
 ### Markdown guidelines
 
@@ -230,7 +273,7 @@ Reports now include a `targets` hierarchy (`parent_id`, `order`, title/depth), b
 
 ## Provider and model configuration
 
-Deterministic checks do not require a provider or API key. Semantic checks use hosted providers or Ollama.
+Deterministic checks do not require a provider or API key. Semantic checks use hosted providers, Ollama, or an installed Claude Code or Codex CLI client.
 
 Provider/model precedence is:
 
@@ -238,7 +281,7 @@ Provider/model precedence is:
 CLI flag > environment variable
 ```
 
-With no provider selected, only deterministic rules run. Selecting a provider requires an explicit model through the CLI or environment. Unknown provider names are rejected before any network request. Provider names are case-insensitive. For a compatible custom service, select one of the supported provider formats and set its endpoint.
+With no provider selected, only deterministic rules run. API providers and Ollama require an explicit model; `claude-code` and `codex-cli` use the selected CLI's default model if `--model` is omitted. Unknown provider names are rejected before any network request. Provider names are case-insensitive. For a compatible custom service, select one of the supported provider formats and set its endpoint.
 
 Credential precedence is:
 
@@ -265,6 +308,8 @@ Do not pass secrets as CLI arguments because shell history may retain them.
 | `anthropic` | `ANTHROPIC_API_KEY` | A model supported by your account |
 | `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4` |
 | `ollama` | None by default | `llama3.1` |
+| `claude-code` | Existing Claude Code CLI login | CLI default, or pass `--model` |
+| `codex-cli` | Existing Codex CLI login | CLI default, or pass `--model` |
 
 Examples:
 
@@ -280,7 +325,25 @@ advisor-review review --provider openrouter --model anthropic/claude-sonnet-4
 
 ollama serve
 advisor-review review --provider ollama --model llama3.1
+
+# Reuse an authenticated Claude Code or Codex CLI installation
+advisor-review review --provider claude-code
+advisor-review review --provider codex-cli --model gpt-5-codex
 ```
+
+OpenRouter attribution is optional. Set either or both environment variables to include the corresponding header on OpenRouter requests only:
+
+```bash
+export OPENROUTER_HTTP_REFERER="https://your-project.example"
+export OPENROUTER_APP_TITLE="Advisor Review"
+advisor-review review --provider openrouter --model anthropic/claude-sonnet-4
+```
+
+`OPENROUTER_HTTP_REFERER` sets `HTTP-Referer`, which identifies the app for OpenRouter attribution. `OPENROUTER_APP_TITLE` sets `X-OpenRouter-Title`, the display name. The referer is the primary identifier; both values can be omitted.
+
+Install and authenticate the selected CLI separately using its vendor instructions. These providers do not use `ADVISOR_REVIEW_API_KEY`; model access, usage limits, and billing follow the CLI account. To select an executable explicitly (for example, when VS Code has a limited `PATH`), set `ADVISOR_REVIEW_CLAUDE_CODE_BIN` or `ADVISOR_REVIEW_CODEX_BIN` to its path.
+
+For each semantic request, advisor-review passes only its bounded review prompt through standard input, runs the client from a fresh temporary directory, and removes that directory afterward. Claude Code runs in print mode with tools disabled, restricted execution, strict MCP configuration, and session persistence disabled. Codex runs with a read-only sandbox, ephemeral session, and user rules disabled. The manuscript project is not the CLI working directory. The selected CLI sends the prompt according to its own authentication and service configuration; consult that tool's privacy and usage terms before use. There is no automatic provider fallback.
 
 ### Custom endpoint
 
@@ -293,11 +356,11 @@ export ADVISOR_REVIEW_ENDPOINT=http://localhost:11434/v1/chat/completions
 advisor-review review
 ```
 
-OpenAI-compatible requests are used for OpenAI, OpenRouter, Ollama, and compatible custom endpoints. Anthropic uses its Messages API format. Pipeline responses contain a nonempty `summary` and a `findings` array (empty means no finding). Each finding requires a status (`violation`, `concern`, `suggestion`, or `uncertain`), nonempty explanation, and evidence entries with a supplied `target_id` and exact `quote`. A zero-based UTF-8 `start` offset is required for repeated quotes. Optional `suggestion` and confidence between 0 and 1 are supported. Unknown targets, invented quotes, invalid offsets, and malformed responses become issues. Requests have a 30-second timeout; HTTP failures preserve completed findings.
+OpenAI-compatible chat-completions requests are used for OpenAI, OpenRouter, Ollama, and compatible custom endpoints. OpenRouter accepts model IDs such as `anthropic/claude-sonnet-4`; its attribution headers are optional. Anthropic uses its Messages API format. Pipeline responses contain a nonempty `summary` and a `findings` array (empty means no finding). Each finding requires a status (`violation`, `concern`, `suggestion`, or `uncertain`), nonempty explanation, and evidence entries with a supplied `target_id` and exact `quote`. A zero-based UTF-8 `start` offset is required for repeated quotes. Optional `suggestion` and confidence between 0 and 1 are supported. Unknown targets, invented quotes, invalid offsets, and malformed responses become issues. Requests have a 30-second timeout; HTTP failures preserve completed findings.
 
 Every semantic prompt is checked against `--max-input-bytes`, including instructions, JSON encoding, target, and context. This is a conservative byte budget, not a model-specific token count or a total-run cost limit. Oversized sentence/paragraph requests are skipped. Oversized section/document text is split into bounded chunks, then reviewed through bounded summary-and-original-excerpt synthesis. Such global checks are always marked `partial` and return exit code 1: summaries cannot establish a complete global pass. Chunk failures preserve earlier findings; synthesis evidence must cite original excerpts, never generated summaries. Very small budgets or long instructions may prevent requests entirely. Large reviews can require many provider requests.
 
-The current adapters support semantic text only. Vision-language and cross-modal rules are explicitly skipped. Credentials and configured endpoint values are redacted from configuration debug output; transport errors do not echo endpoint URLs.
+The current adapters support semantic text only. Vision-language and cross-modal rules are explicitly skipped. Credentials and configured endpoint values are redacted from configuration debug output; transport errors do not echo endpoint URLs. Installed CLI calls have a three-minute process timeout; HTTP calls use a 30-second timeout.
 
 ## Output files
 
@@ -310,6 +373,8 @@ review/
 ```
 
 `findings.json` is the versioned integration contract (schema `2.0`) and includes project/PDF/provider metadata, rule provenance, findings, typed target hierarchy, source anchors, candidates, conflicts, and analysis issues. Per-scope coverage distinguishes selected levels, extracted targets, rules, evaluations, completed, partial, skipped, failed, and not-applicable checks. Completed means execution succeeded, not that no problems were found. Per-target evaluation records connect that accounting to rules. Markdown shows coverage and groups findings by scope and section.
+
+The Markdown report starts with a complete/incomplete status, finding counts by severity, provider/model, and next steps when checks need attention. Each finding shows its status, source location, evidence, and suggestion when available. The CLI prints the report path; exit code `1` means the run is incomplete even if findings were produced.
 
 Findings can contain manuscript excerpts, file paths, and provider metadata. Treat reports as sensitive.
 
@@ -328,7 +393,7 @@ Common fixes:
 - Missing LaTeX source: use `--main-tex path/to/main.tex` or place a `.tex` file in the project.
 - Missing PDF: compile first or use `--pdf path/to/paper.pdf`.
 - Semantic checks skipped: verify provider, model, API key, and rule `requires` capabilities.
-- Provider failure: verify endpoint, model, API key, network, and provider account permissions.
+- Provider failure: verify endpoint, model, API key, network, and provider account permissions. For CLI providers, verify the selected CLI is installed, authenticated, and available on `PATH`, or set its `ADVISOR_REVIEW_*_BIN` override.
 - Missing rule: confirm the file extension and required rule fields.
 
 ## Current analysis limits
@@ -339,4 +404,4 @@ LaTeX analysis handles common commands, comments (including escaped percent sign
 
 ## Privacy
 
-Hosted providers receive semantic-review prompts, selected context, and manuscript target text when those rules run, including chunks and synthesis excerpts for large reviews. Use Ollama or another local endpoint when manuscript content must remain local. Reports include manuscript text in the target hierarchy, even for unselected scopes. Keep API keys in environment variables and never in guideline files.
+Hosted providers and installed CLI clients receive semantic-review prompts, selected context, and manuscript target text when those rules run, including chunks and synthesis excerpts for large reviews. Ollama can keep inference local when configured locally; a CLI provider's data handling depends on the signed-in account and selected model service. Reports include manuscript text in the target hierarchy, even for unselected scopes. Keep API keys in environment variables and never in guideline files.

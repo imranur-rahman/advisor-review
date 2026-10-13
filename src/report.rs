@@ -15,28 +15,59 @@ pub fn write(report: &ReviewReport, output: &Path) -> Result<()> {
 }
 
 pub fn markdown(report: &ReviewReport) -> String {
+    let incomplete = report.is_incomplete();
     let mut out = format!(
-        "# Manuscript Review\n\n- Project: `{}`\n- Main LaTeX: `{}`\n- PDF: `{}`\n- Findings: {}\n\n",
-        report.project,
-        report.main_tex,
-        report.pdf,
-        report.findings.len()
+        "# Manuscript Review\n\n**Status:** {}\n\n",
+        if incomplete {
+            "⚠️ Incomplete — some checks need attention"
+        } else {
+            "✅ Complete"
+        }
     );
-    if report.is_incomplete() {
-        out.push_str("**Review incomplete:** some rules could not be evaluated. See Review Issues below.\n\n");
+    let mut severity_counts = std::collections::BTreeMap::new();
+    for finding in &report.findings {
+        *severity_counts
+            .entry(finding.severity.as_str())
+            .or_insert(0usize) += 1;
     }
-    if report.findings.is_empty() {
-        out.push_str("No findings were produced.\n");
+    let severity_summary = if severity_counts.is_empty() {
+        "no findings".into()
+    } else {
+        severity_counts
+            .iter()
+            .map(|(severity, count)| format!("{count} {severity}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let provider = match (&report.provider.provider, &report.provider.model) {
+        (Some(provider), Some(model)) => format!("{provider} / {model}"),
+        (Some(provider), None) => provider.clone(),
+        _ => "deterministic checks only".into(),
+    };
+    out.push_str(&format!(
+        "**Findings:** {} ({severity_summary})  \n**Provider:** {provider}  \n**Project:** `{}`  \n**Source:** `{}`  \n**PDF:** `{}`\n\n",
+        report.findings.len(), report.project, report.main_tex, report.pdf
+    ));
+    if incomplete {
+        out.push_str("**Next step:** review the issues below, fix configuration or unsupported checks, then rerun.\n\n");
+    } else if report.findings.is_empty() {
+        out.push_str("No findings were produced. This means all selected checks completed without reporting a finding.\n\n");
+    } else {
+        out.push_str("Findings include their status, source location, evidence, and any suggested action.\n\n");
     }
     if !report.coverage.is_empty() {
-        out.push_str("## Coverage by scope\n\n| Scope | Selected | Targets | Rules | Evaluations | Completed | Partial | Skipped | Failed | Not applicable |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+        out.push_str("## Coverage by scope\n\n| Scope | Selection | Rules | Targets | Evaluations | Complete | Partial | Skipped | Failed | N/A |\n|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n");
         for (scope, c) in &report.coverage {
             out.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 scope,
-                c.selected,
-                c.targets,
+                if c.selected {
+                    "Selected"
+                } else {
+                    "Not selected"
+                },
                 c.rules,
+                c.targets,
                 c.evaluations,
                 c.completed,
                 c.partial,
@@ -89,6 +120,62 @@ pub fn markdown(report: &ReviewReport) -> String {
     out
 }
 
+pub fn vscode_diagnostics(report: &ReviewReport) -> Vec<String> {
+    report
+        .findings
+        .iter()
+        .filter_map(|finding| {
+            let source = finding.target.anchor.sources.first().or(finding
+                .target
+                .anchor
+                .source
+                .as_ref())?;
+            if source.start_line == 0 {
+                return None;
+            }
+            let severity = match finding.severity.as_str() {
+                "error" => "error",
+                "warning" => "warning",
+                _ => "info",
+            };
+            let mut parts = vec![
+                format!("[{}]", finding.rule_id),
+                finding.status.clone(),
+                finding.explanation.clone(),
+            ];
+            let evidence = if finding.evidence_spans.is_empty() {
+                finding.evidence.clone()
+            } else {
+                finding
+                    .evidence_spans
+                    .iter()
+                    .map(|span| span.quote.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
+            if !evidence.trim().is_empty() {
+                parts.push(format!("Evidence: {evidence}"));
+            }
+            if let Some(suggestion) = finding.suggestion.as_deref() {
+                parts.push(format!("Suggestion: {suggestion}"));
+            }
+            let message = parts
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            Some(format!(
+                "{}({},{}): {}: {}",
+                source.file,
+                source.start_line,
+                source.start_column.unwrap_or(1),
+                severity,
+                message
+            ))
+        })
+        .collect()
+}
+
 fn finding_markdown(f: &ReviewFinding) -> String {
     let spans = if f.target.anchor.sources.is_empty() {
         f.target.anchor.source.iter().collect::<Vec<_>>()
@@ -119,16 +206,32 @@ fn finding_markdown(f: &ReviewFinding) -> String {
         .pdf
         .as_ref()
         .map(|p| format!("page {} ({})", p.page, p.mapping_quality));
+    let status = if f.status.is_empty() {
+        "finding"
+    } else {
+        &f.status
+    };
+    let confidence = f
+        .confidence
+        .map(|v| format!("  \n**Confidence:** {:.0}%", v * 100.0))
+        .unwrap_or_default();
+    let evidence = if f.evidence_spans.is_empty() {
+        format!("**Evidence:** {}", f.evidence)
+    } else {
+        String::new()
+    };
     let mut out = format!(
-        "### {} `{}`\n\n**Target:** {} `{}`  \n**Source:** `{}`{}  \n**Evidence:** {}\n\n{}\n\n{}\n\n",
+        "### {} · {} — `{}`\n\n**Target:** {} `{}`  \n**Source:** `{}`{}{}{}\n\n{}\n\n{}\n\n",
         f.severity,
+        status,
         f.rule_id,
         f.target.target_type,
         f.target.id,
         source,
         pdf.map(|p| format!("  \n**PDF:** {}", p))
             .unwrap_or_default(),
-        f.evidence,
+        confidence,
+        evidence,
         f.explanation,
         f.suggestion
             .as_deref()

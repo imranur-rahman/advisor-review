@@ -2,6 +2,22 @@
 
 `advisor-review` is a local-first CLI for reviewing LaTeX manuscripts against advisor, journal, conference, and project guidelines. It analyzes LaTeX source and the compiled PDF, then writes anchored findings as JSON and Markdown.
 
+## Architecture
+
+```mermaid
+flowchart LR
+  A[LaTeX project and PDF] --> B[Source and target analysis]
+  C[Guideline files] --> D[Rule loading and conflict resolution]
+  B --> E[Review engine]
+  D --> E
+  E --> F[Deterministic checks]
+  E --> G[Semantic checks]
+  G --> H[Hosted APIs, Ollama, Claude Code, or Codex CLI]
+  F --> I[Anchored findings and coverage]
+  H --> I
+  I --> J[JSON and Markdown reports]
+```
+
 ## Install from crates.io
 
 Once released:
@@ -27,9 +43,13 @@ review/findings.json
 review/findings.md
 ```
 
-Exit code `0` means the configured review completed (findings may still exist). Exit code `1` means failure or an incomplete review; inspect the reports for invalid rules, skipped checks, or provider errors. Invalid inputs/configuration return `2`. Semantic review requires both a provider and an explicit model.
+Exit code `0` means the configured review completed (findings may still exist). Exit code `1` means failure or an incomplete review; inspect the reports for invalid rules, skipped checks, or provider errors. Invalid inputs/configuration return `2`. API providers require an explicit model; Claude Code and Codex CLI can use their configured default.
 
 For complete CLI, rule, provider, output, and troubleshooting documentation, see [CONFIGURATION.md](CONFIGURATION.md).
+
+Use the documented VS Code task to surface source-anchored findings in the Problems panel and jump directly to the relevant LaTeX lines.
+
+Semantic reviews support OpenAI, Anthropic, OpenRouter, Ollama, and installed Claude Code or Codex CLI clients. See [provider setup](CONFIGURATION.md#provider-and-model-configuration) for details.
 
 The repository's [writing don'ts guide](guidelines/writing-donts.md) includes a
 companion [semantic rule pack](guidelines/writing-donts.yaml) for filler, repetitive

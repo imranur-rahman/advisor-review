@@ -3,7 +3,14 @@ use crate::manuscript::mapped_view;
 use crate::model::{DocumentTarget, EvidenceReference, ReviewFinding, ReviewIssue, RuleDefinition};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{
+    fs,
+    io::{Read, Write},
+    process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::{Duration, Instant},
+};
 
 pub trait SemanticProvider {
     fn can_handle(&self, rule: &RuleDefinition) -> bool;
@@ -341,7 +348,14 @@ impl ConfiguredProvider {
             .as_deref()
             .unwrap_or_default()
             .to_lowercase();
-        let model = self.config.model.clone().expect("validated provider model");
+        if provider == "claude-code" || provider == "codex-cli" {
+            return self.send_cli(rule, prompt, &provider);
+        }
+        let model = self
+            .config
+            .model
+            .clone()
+            .expect("validated API provider model");
         let key = self.config.api_key.clone();
         let endpoint = self
             .config
@@ -364,6 +378,14 @@ impl ConfiguredProvider {
             let request = json!({"model": model, "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}});
             let mut req = agent.post(&endpoint).set("content-type", "application/json");
             if let Some(k) = key.as_deref() { req = req.set("authorization", &format!("Bearer {k}")); }
+            if provider == "openrouter" {
+                if let Some(referer) = self.config.openrouter_http_referer.as_deref() {
+                    req = req.set("HTTP-Referer", referer);
+                }
+                if let Some(title) = self.config.openrouter_app_title.as_deref() {
+                    req = req.set("X-OpenRouter-Title", title);
+                }
+            }
             req.send_json(request)
         }.map_err(|err| {
             // Transport errors can include an endpoint containing credentials.
@@ -395,5 +417,192 @@ impl ConfiguredProvider {
                 .to_string()
         };
         Ok(content)
+    }
+
+    fn send_cli(
+        &self,
+        rule: &RuleDefinition,
+        prompt: &str,
+        provider: &str,
+    ) -> Result<String, ReviewIssue> {
+        let (binary, claude) = if provider == "claude-code" {
+            (
+                self.config.claude_code_bin.as_deref().unwrap_or("claude"),
+                true,
+            )
+        } else {
+            (self.config.codex_bin.as_deref().unwrap_or("codex"), false)
+        };
+        let workdir = CliWorkdir::create().map_err(|_| {
+            issue(
+                "provider_error",
+                "could not create isolated CLI working directory".into(),
+                rule,
+            )
+        })?;
+        let output_path = workdir.path.join("response.txt");
+        let mut command = Command::new(binary);
+        command
+            .current_dir(&workdir.path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if claude {
+            command.args([
+                "-p",
+                "--output-format",
+                "json",
+                "--no-session-persistence",
+                "--tools",
+                "",
+                "--restricted",
+                "--strict-mcp-config",
+            ]);
+            if let Some(model) = self.config.model.as_deref() {
+                command.args(["--model", model]);
+            }
+        } else {
+            command.args([
+                "exec",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "--ignore-rules",
+                "--output-last-message",
+            ]);
+            command.arg(&output_path);
+            if let Some(model) = self.config.model.as_deref() {
+                command.args(["--model", model]);
+            }
+            command.arg("-");
+        }
+        let mut child = command.spawn().map_err(|_| {
+            issue(
+                "provider_error",
+                format!("{provider} CLI was not found; install it or set its executable override"),
+                rule,
+            )
+        })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            if stdin.write_all(prompt.as_bytes()).is_err() {
+                let _ = child.kill();
+                return Err(issue(
+                    "provider_error",
+                    format!("could not send prompt to {provider} CLI"),
+                    rule,
+                ));
+            }
+        }
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let stderr = child.stderr.take().expect("stderr was piped");
+        let stdout_reader = thread::spawn(move || read_all(stdout));
+        let stderr_reader = thread::spawn(move || read_all(stderr));
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if started.elapsed() < Duration::from_secs(180) => {
+                    thread::sleep(Duration::from_millis(50))
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+            }
+        };
+        if status.is_none() {
+            // Do not wait on pipe-reader threads after timeout: a CLI may have spawned a
+            // descendant that inherited stdout or stderr, even though its parent was killed.
+            drop(stdout_reader);
+            drop(stderr_reader);
+            return Err(issue(
+                "provider_error",
+                format!("{provider} CLI timed out or could not be monitored"),
+                rule,
+            ));
+        }
+        let stdout = stdout_reader
+            .join()
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        let _stderr = stderr_reader
+            .join()
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        let status = status.expect("checked above");
+        if !status.success() {
+            return Err(issue(
+                "provider_error",
+                format!(
+                    "{provider} CLI failed with status {}; verify it is authenticated and its model is available",
+                    status.code().map_or("unknown".into(), |c| c.to_string())
+                ),
+                rule,
+            ));
+        }
+        if claude {
+            let envelope: Value = serde_json::from_slice(&stdout).map_err(|_| {
+                issue(
+                    "provider_response",
+                    "Claude Code returned invalid JSON".into(),
+                    rule,
+                )
+            })?;
+            envelope
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    issue(
+                        "provider_response",
+                        "Claude Code response did not contain a result".into(),
+                        rule,
+                    )
+                })
+        } else {
+            fs::read_to_string(output_path).map_err(|_| {
+                issue(
+                    "provider_response",
+                    "Codex CLI did not write its final response".into(),
+                    rule,
+                )
+            })
+        }
+    }
+}
+
+fn read_all(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output)?;
+    Ok(output)
+}
+
+static NEXT_CLI_DIR: AtomicU64 = AtomicU64::new(0);
+struct CliWorkdir {
+    path: std::path::PathBuf,
+}
+impl CliWorkdir {
+    fn create() -> std::io::Result<Self> {
+        let path = std::env::temp_dir().join(format!(
+            "advisor-review-cli-{}-{}",
+            std::process::id(),
+            NEXT_CLI_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path)?;
+        Ok(Self { path })
+    }
+}
+impl Drop for CliWorkdir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
     }
 }

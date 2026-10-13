@@ -36,6 +36,7 @@ fn mock(status: u16, body: String) -> (String, thread::JoinHandle<Value>) {
             .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut length = 0;
+        let mut headers = serde_json::Map::new();
         loop {
             let mut line = String::new();
             assert!(reader.read_line(&mut line).unwrap() > 0);
@@ -43,6 +44,7 @@ fn mock(status: u16, body: String) -> (String, thread::JoinHandle<Value>) {
                 break;
             }
             if let Some((name, value)) = line.split_once(':') {
+                headers.insert(name.trim().to_ascii_lowercase(), json!(value.trim()));
                 if name.eq_ignore_ascii_case("content-length") {
                     length = value.trim().parse().unwrap();
                 }
@@ -51,7 +53,9 @@ fn mock(status: u16, body: String) -> (String, thread::JoinHandle<Value>) {
         let mut request = vec![0; length];
         reader.read_exact(&mut request).unwrap();
         write!(stream, "HTTP/1.1 {status} Mock\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
-        serde_json::from_slice(&request).unwrap()
+        let mut request: Value = serde_json::from_slice(&request).unwrap();
+        request["_headers"] = Value::Object(headers);
+        request
     });
     (url, handle)
 }
@@ -76,8 +80,41 @@ fn provider(name: &str, endpoint: String) -> ConfiguredProvider {
             model: Some("test-model".into()),
             endpoint: Some(endpoint),
             api_key: Some("test-secret".into()),
+            ..Default::default()
         },
     }
+}
+
+fn pass_response() -> String {
+    json!({"choices":[{"message":{"content":json!({"status":"pass","evidence":"Caption: measured response","explanation":"Clear"}).to_string()}}]}).to_string()
+}
+
+#[test]
+fn openrouter_attribution_headers_are_optional_and_provider_specific() {
+    let (endpoint, server) = mock(200, pass_response());
+    let mut openrouter = provider("openrouter", endpoint);
+    openrouter.config.openrouter_http_referer = Some("https://example.org".into());
+    openrouter.config.openrouter_app_title = Some("Advisor Review".into());
+    assert!(openrouter.review(&rule(), &target()).unwrap().is_none());
+    let request = server.join().unwrap();
+    assert_eq!(request["_headers"]["http-referer"], "https://example.org");
+    assert_eq!(request["_headers"]["x-openrouter-title"], "Advisor Review");
+
+    let (endpoint, server) = mock(200, pass_response());
+    let openrouter = provider("openrouter", endpoint);
+    assert!(openrouter.review(&rule(), &target()).unwrap().is_none());
+    let request = server.join().unwrap();
+    assert!(request["_headers"].get("http-referer").is_none());
+    assert!(request["_headers"].get("x-openrouter-title").is_none());
+
+    let (endpoint, server) = mock(200, pass_response());
+    let mut openai = provider("openai", endpoint);
+    openai.config.openrouter_http_referer = Some("https://example.org".into());
+    openai.config.openrouter_app_title = Some("Advisor Review".into());
+    assert!(openai.review(&rule(), &target()).unwrap().is_none());
+    let request = server.join().unwrap();
+    assert!(request["_headers"].get("http-referer").is_none());
+    assert!(request["_headers"].get("x-openrouter-title").is_none());
 }
 
 #[test]
@@ -106,6 +143,63 @@ fn configuration_rejects_unknown_providers_and_requires_models() {
     let mut vision = rule();
     vision.kind = "cross-modal".into();
     assert!(!local.can_handle(&vision));
+}
+
+#[cfg(unix)]
+#[test]
+fn installed_cli_providers_use_fake_executables_and_shared_evidence_validation() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let dir = tempfile::tempdir().unwrap();
+    let result = r#"{"summary":"Reviewed caption.","findings":[{"status":"concern","explanation":"The caption is underspecified.","evidence":[{"target_id":"figure-1","quote":"measured response"}]}]}"#;
+    let claude_script = dir.path().join("claude-mock");
+    fs::write(
+        &claude_script,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{{\"result\":{}}}'\n",
+            serde_json::to_string(result).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&claude_script, fs::Permissions::from_mode(0o755)).unwrap();
+    let codex_script = dir.path().join("codex-mock");
+    fs::write(&codex_script, format!("#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"--output-last-message\" ]; then shift; out=\"$1\"; fi\n  shift\ndone\ncat >/dev/null\nprintf '%s' {} > \"$out\"\n", serde_json::to_string(result).unwrap())).unwrap();
+    fs::set_permissions(&codex_script, fs::Permissions::from_mode(0o755)).unwrap();
+    for (name, binary) in [
+        ("claude-code", &claude_script),
+        ("codex-cli", &codex_script),
+    ] {
+        let config = ProviderConfig {
+            name: Some(name.into()),
+            claude_code_bin: (name == "claude-code").then(|| binary.display().to_string()),
+            codex_bin: (name == "codex-cli").then(|| binary.display().to_string()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok(), "model may use CLI default");
+        let provider = ConfiguredProvider { config };
+        let outcome = provider
+            .review_context(&rule(), &target(), &[], "target", 32_768)
+            .unwrap();
+        assert_eq!(outcome.findings.len(), 1);
+        assert_eq!(
+            outcome.findings[0].evidence_spans[0].quote,
+            "measured response"
+        );
+    }
+
+    let failing_script = dir.path().join("claude-fail");
+    fs::write(&failing_script, "#!/bin/sh\ncat >/dev/null\nexit 7\n").unwrap();
+    fs::set_permissions(&failing_script, fs::Permissions::from_mode(0o755)).unwrap();
+    let failed = ConfiguredProvider {
+        config: ProviderConfig {
+            name: Some("claude-code".into()),
+            claude_code_bin: Some(failing_script.display().to_string()),
+            ..Default::default()
+        },
+    }
+    .review_context(&rule(), &target(), &[], "target", 32_768)
+    .unwrap_err();
+    assert_eq!(failed.kind, "provider_error");
+    assert!(failed.message.contains("status 7"));
 }
 
 #[test]

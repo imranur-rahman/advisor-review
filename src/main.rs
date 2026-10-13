@@ -7,7 +7,7 @@ use advisor_review::{
     report, review,
 };
 use anyhow::Result;
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -34,15 +34,26 @@ enum Command {
         main_tex: Option<PathBuf>,
         #[arg(long)]
         pdf: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Semantic provider (API provider, ollama, claude-code, or codex-cli)"
+        )]
         provider: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Provider model; optional for installed CLI providers")]
         model: Option<String>,
         #[arg(long, value_delimiter = ',')]
         scopes: Vec<String>,
         #[arg(long, default_value_t = 32768)]
         max_input_bytes: usize,
+        #[arg(long, value_enum, default_value = "text")]
+        format: OutputFormat,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Vscode,
 }
 
 fn main() -> Result<()> {
@@ -58,6 +69,7 @@ fn main() -> Result<()> {
             model,
             scopes,
             max_input_bytes,
+            format,
         }) => run_review(
             project,
             guidelines,
@@ -69,6 +81,7 @@ fn main() -> Result<()> {
                 scopes,
                 max_input_bytes,
             },
+            format,
         )?,
         None => {
             Cli::command().print_help()?;
@@ -90,6 +103,7 @@ fn run_review(
     pdf: Option<PathBuf>,
     provider_config: ProviderConfig,
     options: review::ReviewOptions,
+    format: OutputFormat,
 ) -> Result<i32> {
     if let Err(err) = options.validate() {
         eprintln!("error: {err}");
@@ -153,14 +167,36 @@ fn run_review(
     result.conflicts = registry.conflicts;
     result.issues = issues;
     report::write(&result, &output)?;
-    println!(
-        "wrote {} findings to {}",
-        result.findings.len(),
-        output.display()
-    );
+    match format {
+        OutputFormat::Text => println!(
+            "{}: {} findings; report: {}/findings.md",
+            if result.is_incomplete() {
+                "review incomplete"
+            } else {
+                "review complete"
+            },
+            result.findings.len(),
+            output.display()
+        ),
+        OutputFormat::Vscode => {
+            for diagnostic in report::vscode_diagnostics(&result) {
+                println!("{diagnostic}");
+            }
+            println!(
+                "advisor-review: {} ({} findings); details: {}/findings.md",
+                if result.is_incomplete() {
+                    "review incomplete"
+                } else {
+                    "review complete"
+                },
+                result.findings.len(),
+                output.display()
+            );
+        }
+    }
     if result.is_incomplete() {
         eprintln!(
-            "review incomplete: see review issues in {}/findings.json",
+            "review incomplete: see Review Issues in {}/findings.md and findings.json for details",
             output.display()
         );
         Ok(1)

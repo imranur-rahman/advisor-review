@@ -40,4 +40,31 @@ fn review_writes_json_and_markdown_findings() {
     assert!(json.contains("paragraph"));
     let markdown = fs::read_to_string(output.join("findings.md")).unwrap();
     assert!(markdown.contains("Avoid vague intensifiers"));
+    assert!(markdown.contains("**Status:** ✅ Complete"));
+    assert!(markdown.contains("warning · violation"));
+    assert!(String::from_utf8_lossy(&result.stdout).contains("review complete"));
+    assert!(String::from_utf8_lossy(&result.stdout).contains("findings.md"));
+}
+
+#[test]
+fn vscode_output_emits_source_diagnostics_and_keeps_reports() {
+    let root = tempfile::tempdir().unwrap();
+    common::fixture(root.path());
+    let output = common::cli(root.path())
+        .args(["--format", "vscode"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("sections/body.tex(1,1): warning:"));
+    assert!(stdout.contains("[prose.avoid-very] violation"), "{stdout}");
+    assert!(stdout.contains("Evidence: very"));
+    let matcher = regex::Regex::new(r"^(.+)\((\d+),(\d+)\): (error|warning|info): (.*)$").unwrap();
+    assert!(stdout.lines().any(|line| matcher.is_match(line)));
+    assert!(root.path().join("review/findings.json").exists());
+    assert!(root.path().join("review/findings.md").exists());
 }

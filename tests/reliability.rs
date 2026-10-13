@@ -129,7 +129,7 @@ fn invalid_rules_and_skipped_checks_preserve_results_and_exit_one() {
             .iter()
             .any(|i| i.rule_id.as_deref() == Some("unsupported") && i.kind == "skipped")
     );
-    assert!(report::markdown(&result).contains("Review incomplete"));
+    assert!(report::markdown(&result).contains("Incomplete — some checks need attention"));
 }
 
 #[test]
