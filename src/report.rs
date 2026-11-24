@@ -104,6 +104,16 @@ pub fn markdown(report: &ReviewReport) -> String {
         }
         out.push('\n');
     }
+    if !report.stale_rules.is_empty() {
+        out.push_str("## Stale Compiled Rules\n\n");
+        for stale in &report.stale_rules {
+            out.push_str(&format!(
+                "- `{}` from `{}` lines {}-{}: {}\n",
+                stale.rule_id, stale.file, stale.start_line, stale.end_line, stale.reason
+            ));
+        }
+        out.push('\n');
+    }
     if !report.candidates.is_empty() {
         out.push_str("## Rule Candidates\n\n");
         for c in &report.candidates {

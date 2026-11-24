@@ -341,6 +341,17 @@ impl SemanticStatus {
 }
 
 impl ConfiguredProvider {
+    /// Sends a prompt that is not tied to a rule, such as a compile prompt. Installed
+    /// CLIs run with the same isolation as semantic review. `label` names the request
+    /// in a returned issue.
+    pub fn send_prompt(&self, label: &str, prompt: &str) -> Result<String, ReviewIssue> {
+        let rule = RuleDefinition {
+            id: label.into(),
+            ..Default::default()
+        };
+        self.send(&rule, prompt)
+    }
+
     fn send(&self, rule: &RuleDefinition, prompt: &str) -> Result<String, ReviewIssue> {
         let provider = self
             .config

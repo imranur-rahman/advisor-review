@@ -1,4 +1,5 @@
-use crate::model::{RuleCandidate, RuleConflict, RuleDefinition};
+use crate::guideline_items;
+use crate::model::{RuleCandidate, RuleConflict, RuleDefinition, RuleProvenance, StaleRule};
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
 use serde_yaml::Value;
@@ -12,6 +13,10 @@ pub struct RuleRegistry {
     pub candidates: Vec<RuleCandidate>,
     pub issues: Vec<String>,
     pub conflicts: Vec<RuleConflict>,
+    /// Valid rules with `status: draft`. They never run in a review.
+    pub drafts: Vec<RuleDefinition>,
+    /// Rules whose guideline item changed after compilation.
+    pub stale: Vec<StaleRule>,
 }
 
 pub fn load(dir: &Path) -> Result<RuleRegistry> {
@@ -128,9 +133,16 @@ fn load_yaml_file(path: &Path, source: &str, registry: &mut RuleRegistry) -> Res
     let raw = fs::read_to_string(path).with_context(|| format!("read guideline {source}"))?;
     let value: Value = serde_yaml::from_str(&raw)
         .with_context(|| format!("parse structured guideline {source}"))?;
-    if let Some(items) = value.get("rules").and_then(Value::as_sequence) {
-        for item in items {
+    let rules = value.get("rules").and_then(Value::as_sequence);
+    let uncheckable = value.get("uncheckable").and_then(Value::as_sequence);
+    if rules.is_some() || uncheckable.is_some() {
+        for item in rules.into_iter().flatten() {
             if let Err(err) = add_rule(item.clone(), source, registry) {
+                registry.issues.push(format!("{err:#}"));
+            }
+        }
+        for item in uncheckable.into_iter().flatten() {
+            if let Err(err) = add_uncheckable(item.clone(), source, registry) {
                 registry.issues.push(format!("{err:#}"));
             }
         }
@@ -196,9 +208,96 @@ fn add_rule(value: Value, source: &str, registry: &mut RuleRegistry) -> Result<(
     }
     validate_rule(&rule).with_context(|| format!("invalid rule {} in {source}", rule.id))?;
     rule.source = Some(source.into());
+    if let Some(provenance) = rule.provenance.clone() {
+        let file = provenance_path(source, &provenance);
+        rule.source = Some(format!(
+            "{}:{}-{}",
+            file.display(),
+            provenance.start_line,
+            provenance.end_line
+        ));
+        if let Some(reason) = stale_reason(&file, &provenance) {
+            registry.stale.push(StaleRule {
+                rule_id: rule.id.clone(),
+                file: file.display().to_string(),
+                start_line: provenance.start_line,
+                end_line: provenance.end_line,
+                reason,
+            });
+        }
+    }
+    if rule.status.as_deref() == Some("draft") {
+        registry.candidates.push(RuleCandidate {
+            id: rule.id.clone(),
+            source: rule.source.clone().unwrap_or_default(),
+            text: rule
+                .description
+                .clone()
+                .or_else(|| rule.name.clone())
+                .unwrap_or_default(),
+            reason: "Compiled draft rule; set status: active to run it".into(),
+            status: "draft".into(),
+        });
+        registry.drafts.push(rule);
+        return Ok(());
+    }
     rule.active = true;
     registry.active.push(rule);
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckableEntry {
+    id: String,
+    text: String,
+    reason: String,
+    provenance: RuleProvenance,
+}
+
+fn add_uncheckable(value: Value, source: &str, registry: &mut RuleRegistry) -> Result<()> {
+    let entry: UncheckableEntry = serde_yaml::from_value(value)
+        .with_context(|| format!("invalid uncheckable entry in {source}"))?;
+    let file = provenance_path(source, &entry.provenance);
+    registry.candidates.push(RuleCandidate {
+        id: entry.id,
+        source: format!(
+            "{}:{}-{}",
+            file.display(),
+            entry.provenance.start_line,
+            entry.provenance.end_line
+        ),
+        text: entry.text,
+        reason: entry.reason,
+        status: "uncheckable".into(),
+    });
+    Ok(())
+}
+
+/// Provenance paths are relative to the directory of the compiled pack.
+fn provenance_path(source: &str, provenance: &RuleProvenance) -> std::path::PathBuf {
+    Path::new(source)
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(&provenance.file)
+}
+
+/// Returns why a compiled rule is stale, or `None` when its guideline item is unchanged.
+/// An item that moved to other lines with the same text is not stale.
+pub fn stale_reason(file: &Path, provenance: &RuleProvenance) -> Option<String> {
+    let Ok(text) = fs::read_to_string(file) else {
+        return Some("source guideline file is missing or unreadable".into());
+    };
+    if guideline_items::hash_lines(&text, provenance.start_line, provenance.end_line).as_deref()
+        == Some(provenance.sha256.as_str())
+    {
+        return None;
+    }
+    let items = guideline_items::split(&text);
+    if guideline_items::find_by_hash(&items, &provenance.sha256).is_some() {
+        return None;
+    }
+    Some("source guideline item changed after compilation".into())
 }
 
 pub fn validate_rule(rule: &RuleDefinition) -> Result<()> {
@@ -268,6 +367,34 @@ pub fn validate_rule(rule: &RuleDefinition) -> Result<()> {
         rule.severity
     );
     ensure!(
+        rule.status
+            .as_deref()
+            .is_none_or(|s| matches!(s, "draft" | "active")),
+        "status must be draft or active"
+    );
+    if let Some(tests) = &rule.tests {
+        ensure!(
+            tests
+                .should_fire
+                .iter()
+                .chain(&tests.should_pass)
+                .all(|t| !t.trim().is_empty()),
+            "example tests cannot be empty strings"
+        );
+    }
+    if rule.provenance.is_some() {
+        ensure!(
+            rule.tests
+                .as_ref()
+                .is_some_and(|t| !t.should_fire.is_empty() && !t.should_pass.is_empty()),
+            "compiled rules require at least one tests.should_fire and one tests.should_pass example"
+        );
+    }
+    ensure!(
+        rule.check.max.is_none() || rule.check.check_type == "count",
+        "check.max is only supported for count checks"
+    );
+    ensure!(
         rule.check.parameters.is_empty(),
         "unknown check parameters: {:?}",
         rule.check.parameters.keys().collect::<Vec<_>>()
@@ -285,15 +412,21 @@ pub fn validate_rule(rule: &RuleDefinition) -> Result<()> {
         "semantic kinds require check.type: semantic; deterministic kinds require a deterministic check"
     );
     match rule.check.check_type.as_str() {
-        "regex" | "forbid" | "contains" => {
+        "regex" | "forbid" | "contains" | "count" => {
             let pattern = rule
                 .check
                 .pattern
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .context("nonempty check.pattern is required")?;
-            if rule.check.check_type == "regex" {
+            if matches!(rule.check.check_type.as_str(), "regex" | "count") {
                 Regex::new(pattern).context("invalid regex")?;
+            }
+            if rule.check.check_type == "count" {
+                ensure!(
+                    rule.check.max.is_some_and(|max| max >= 0),
+                    "count requires a non-negative integer check.max"
+                );
             }
         }
         "min_pixels" => {

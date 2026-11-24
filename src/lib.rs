@@ -1,5 +1,7 @@
+pub mod compile;
 pub mod config;
 pub mod discover;
+pub mod guideline_items;
 pub mod guidelines;
 pub mod latex;
 pub mod manuscript;
@@ -8,3 +10,4 @@ pub mod pdf;
 pub mod providers;
 pub mod report;
 pub mod review;
+pub mod rule_tests;
