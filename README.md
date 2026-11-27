@@ -58,6 +58,8 @@ rules activate while the Markdown checklist remains a candidate. These checks
 require a configured provider and model; without one, they are skipped and the
 review is incomplete. They assess writing quality, not AI authorship.
 
+To turn Markdown guidelines into rules, run `advisor-review compile --guidelines <file.md> --provider claude-code` (or `codex-cli`). It writes a draft rule pack with example tests next to the source. Draft rules do not run until you change them to `status: active`; `advisor-review rules test` runs the examples of every rule. See [compiling guidelines](CONFIGURATION.md#compile-markdown-guidelines-into-rules).
+
 Sentence, paragraph, section (including its body), and whole-manuscript checks run independently. Select levels with `--scopes sentence,paragraph,section,manuscript`, or omit the flag to run all configured scopes. Rules can choose surrounding context, exact section titles, and prose/source text views. JSON schema 2.0 exposes the hierarchy, precise multi-file source locations, and execution coverage; Markdown groups findings by scope and section.
 
 Semantic prompts are bounded by `--max-input-bytes` (default 32768). Oversized section/manuscript checks use chunk review and synthesis, and are explicitly reported as partial coverage with exit code 1. See the configuration guide for rule examples and migration from heading-only section checks.

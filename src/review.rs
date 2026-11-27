@@ -161,7 +161,7 @@ pub fn run_with_options(
             rule.kind.as_str(),
             "semantic-text" | "semantic-vision" | "cross-modal"
         );
-        let regex = if rule.check.check_type == "regex" {
+        let regex = if matches!(rule.check.check_type.as_str(), "regex" | "count") {
             Some(Regex::new(rule.check.pattern.as_deref().unwrap()).expect("validated regex"))
         } else {
             None
@@ -509,10 +509,40 @@ fn deterministic(
     let check = &rule.check;
     let kind = check.check_type.as_str();
     let mut evidence = target.text.clone();
+    let mut spans = vec![];
     let matched;
     match kind {
         "regex" => {
             matched = regex.expect("compiled regex").is_match(&target.text);
+        }
+        "count" => {
+            let max = check.max.unwrap_or(0).max(0) as usize;
+            let matches: Vec<_> = regex
+                .expect("compiled regex")
+                .find_iter(&target.text)
+                .collect();
+            matched = matches.len() > max;
+            if matched {
+                evidence = format!(
+                    "{} matches (maximum {max}): {}",
+                    matches.len(),
+                    matches
+                        .iter()
+                        .map(|m| m.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                spans = matches
+                    .iter()
+                    .map(|m| EvidenceReference {
+                        target_id: target.id.clone(),
+                        quote: m.as_str().into(),
+                        start: m.start(),
+                        end: m.end(),
+                        sources: mapped_view(target, false).slice(m.range()).spans(),
+                    })
+                    .collect();
+            }
         }
         "forbid" => {
             matched = check
@@ -582,6 +612,6 @@ fn deterministic(
             .or_else(|| rule.description.clone())
             .unwrap_or_else(|| "Rule condition matched".into()),
         suggestion: check.suggestion.clone(),
-        evidence_spans: vec![],
+        evidence_spans: spans,
     }))
 }

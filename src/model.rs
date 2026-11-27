@@ -95,8 +95,44 @@ pub struct RuleCheck {
     pub suggestion: Option<String>,
     #[serde(default)]
     pub value: Option<Value>,
+    /// Maximum allowed matches for `type: count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<i64>,
     #[serde(flatten)]
     pub parameters: BTreeMap<String, Value>,
+}
+
+/// Example texts that must, and must not, trigger a rule.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuleTests {
+    #[serde(default)]
+    pub should_fire: Vec<String>,
+    #[serde(default)]
+    pub should_pass: Vec<String>,
+}
+
+/// Where a compiled rule came from. `file` is relative to the compiled pack.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuleProvenance {
+    pub file: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub sha256: String,
+    pub provider: String,
+    pub model: String,
+    pub compiled_at: String,
+}
+
+/// A compiled rule whose guideline item changed or disappeared after compilation.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StaleRule {
+    pub rule_id: String,
+    pub file: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +167,13 @@ pub struct RuleDefinition {
     pub section: Option<String>,
     #[serde(default = "default_true")]
     pub include_subsections: bool,
+    /// `draft` rules load as candidates; absent or `active` rules run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<RuleTests>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<RuleProvenance>,
 }
 
 impl Default for RuleDefinition {
@@ -151,6 +194,9 @@ impl Default for RuleDefinition {
             context: default_context(),
             section: None,
             include_subsections: true,
+            status: None,
+            tests: None,
+            provenance: None,
         }
     }
 }
@@ -267,6 +313,8 @@ pub struct ReviewReport {
     pub coverage: BTreeMap<String, ScopeCoverage>,
     #[serde(default)]
     pub evaluations: Vec<EvaluationRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_rules: Vec<StaleRule>,
 }
 
 impl ReviewReport {
@@ -290,6 +338,7 @@ impl ReviewReport {
             targets: vec![],
             coverage: BTreeMap::new(),
             evaluations: vec![],
+            stale_rules: vec![],
         }
     }
 }

@@ -30,3 +30,10 @@ model. Without a provider, these checks are reported as skipped and the review
 is incomplete. Scope filtering still applies. Findings are editorial suggestions,
 not authorship judgments. Oversized section checks retain the pipeline's partial
 coverage behavior.
+
+To compile this checklist into a draft pack, run `advisor-review compile
+--guidelines guidelines/writing-donts.md --provider claude-code`. The command
+writes `writing-donts.compiled.yaml` with draft rules, so a review gives the same
+findings as before until you activate a rule. The compile summary names the rules
+in `writing-donts.yaml` that may overlap with the compiled rules. Keep one rule
+for each concern: activate a compiled rule, or keep the hand-written rule, not both.

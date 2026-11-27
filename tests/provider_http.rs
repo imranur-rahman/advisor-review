@@ -31,6 +31,9 @@ fn mock(status: u16, body: String) -> (String, thread::JoinHandle<Value>) {
                 Err(err) => panic!("mock did not receive request: {err}"),
             }
         };
+        // On macOS and other BSDs, an accepted socket inherits the listener's
+        // non-blocking mode, so reads fail with WouldBlock without this.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();

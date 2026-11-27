@@ -195,7 +195,7 @@ check:
 ```
 ````
 
-Candidates appear under `Rule Candidates` in the report and are not executed automatically.
+Candidates appear under `Rule Candidates` in the report and are not executed automatically. To turn the prose into rules, use [`advisor-review compile`](#compile-markdown-guidelines-into-rules).
 
 ### Rule scopes
 
@@ -267,9 +267,80 @@ Reports now include a `targets` hierarchy (`parent_id`, `order`, title/depth), b
 | `regex` | Flags text matching a regular expression. | `pattern` |
 | `forbid` | Flags text containing a literal phrase. | `pattern` |
 | `contains` | Flags text missing a required phrase. | `pattern` |
+| `count` | Flags text where a regular expression matches more than `max` times. Evidence lists each match. | `pattern`, `max` (integer, 0 or more) |
 | `min_pixels` | Flags raster figures below a pixel-area threshold. | `value` |
 | `min_effective_dpi` | Flags figures below calculated DPI when `includegraphics` has `width=...in` or `width=...cm`. | `value` |
 | `environment_exists` | Flags matching LaTeX environments. | none |
+
+Example `count` rule:
+
+```yaml
+id: style.em-dashes
+scope: sentence
+kind: text
+severity: suggestion
+description: Use at most one em dash in a sentence.
+check:
+  type: count
+  pattern: "—"
+  max: 1
+tests:
+  should_fire: ["The method — which is new — works."]
+  should_pass: ["The method works — in most cases."]
+```
+
+### Rule status and example tests
+
+Every rule accepts three optional fields:
+
+| Field | Meaning |
+|---|---|
+| `status` | `active` (the default) or `draft`. A draft rule loads as a candidate and never runs in a review. |
+| `tests` | `should_fire`: texts that must trigger the rule. `should_pass`: texts that must not trigger it. Each text is checked as one target at the rule's scope. |
+| `provenance` | Written by `advisor-review compile`. It records the source guideline item; see below. |
+
+Run every example, including the examples of draft rules:
+
+```bash
+advisor-review rules test --guidelines ./guidelines
+```
+
+The command prints `PASS`, `FAIL`, or `SKIP` for each example. Deterministic examples need no provider. Semantic examples use `--provider` and `--model` like a review; a semantic example counts as fired only when the provider returns a `violation` or `concern` finding. Without a provider, semantic examples are skipped. Exit code `0` means every example passed, `1` means an example failed or was skipped, and `2` means a rule file is invalid.
+
+## Compile Markdown guidelines into rules
+
+`advisor-review compile` sends each Markdown guideline item to an installed Claude Code or Codex CLI and writes a draft rule pack next to the source:
+
+```bash
+advisor-review compile --guidelines guidelines/writing-donts.md --provider claude-code
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--guidelines <PATH>`, `-g` | required | A Markdown file, or a directory; every `.md` file with guideline items is compiled. |
+| `--provider <NAME>` | environment | `claude-code` or `codex-cli`. |
+| `--model <NAME>` | CLI default | Model for the CLI. |
+| `--max-repair-rounds <N>` | `3` | Repair attempts for each rule that fails validation or its examples. |
+| `--force` | off | Replace an existing compiled pack. Without it, the command stops with exit code `2` and makes no CLI call. |
+| `--max-input-bytes <N>` | `32768` | Prompt limit for semantic example tests. |
+
+How it works:
+
+1. The command splits the file into guideline items: one item per top-level list item or prose paragraph. Headings give context. Fenced blocks, including `rule` blocks, and HTML comments are skipped.
+2. For each item, the CLI returns one of three outcomes: deterministic rules (`regex`, `forbid`, `contains`, or `count`), semantic rules that each ask one yes/no question, or `uncheckable` with a reason.
+3. advisor-review validates each rule and runs its examples. When a rule fails, advisor-review sends the failure back to the CLI for a corrected rule. A rule that still fails after the last round is written as an `uncheckable` entry with the last failure.
+4. The command writes `<source-stem>.compiled.yaml` and prints counts of items, deterministic rules, semantic rules, uncheckable entries, failed repairs, and CLI calls. It also names active rules from the same source (`rule` blocks in the Markdown file, or a sibling `<source-stem>.yaml`) that may overlap.
+
+The CLI runs with the same isolation as semantic review: the prompt goes on standard input, the working directory is a temporary directory, session persistence is off, and tools are off (Claude Code) or the sandbox is read-only (Codex). advisor-review, not the CLI, runs the repair loop, so the CLI never needs access to your files. If the CLI fails, the command exits with code `1` and writes no pack for that file.
+
+Activate rules by hand:
+
+1. Read each compiled rule and its examples. The CLI writes the examples for its own rule, so a passing example does not prove the rule is right.
+2. Add real sentences from your drafts to `should_fire` and `should_pass`.
+3. Run `advisor-review rules test --guidelines <pack>`.
+4. Change `status: draft` to `status: active` for each rule you accept.
+
+Each compiled rule and `uncheckable` entry records `provenance`: the source file (relative to the pack), the line range, a SHA-256 hash of the item text, the provider, the model, and the compile time. Findings from a compiled rule name the source file and line range. When a review loads a compiled rule, it hashes the current item. If the item changed or the file is missing, the report lists the rule under `Stale Compiled Rules` (`stale_rules` in JSON). An item that only moved to other lines is not stale. Staleness does not change a rule's status or the exit code; recompile with `--force` to refresh the pack.
 
 ## Provider and model configuration
 
@@ -372,7 +443,7 @@ review/
 └── findings.md
 ```
 
-`findings.json` is the versioned integration contract (schema `2.0`) and includes project/PDF/provider metadata, rule provenance, findings, typed target hierarchy, source anchors, candidates, conflicts, and analysis issues. Per-scope coverage distinguishes selected levels, extracted targets, rules, evaluations, completed, partial, skipped, failed, and not-applicable checks. Completed means execution succeeded, not that no problems were found. Per-target evaluation records connect that accounting to rules. Markdown shows coverage and groups findings by scope and section.
+`findings.json` is the versioned integration contract (schema `2.0`) and includes project/PDF/provider metadata, rule provenance, findings, typed target hierarchy, source anchors, candidates (including draft and uncheckable compiled entries), conflicts, stale compiled rules (`stale_rules`, present only when nonempty), and analysis issues. Per-scope coverage distinguishes selected levels, extracted targets, rules, evaluations, completed, partial, skipped, failed, and not-applicable checks. Completed means execution succeeded, not that no problems were found. Per-target evaluation records connect that accounting to rules. Markdown shows coverage and groups findings by scope and section.
 
 The Markdown report starts with a complete/incomplete status, finding counts by severity, provider/model, and next steps when checks need attention. Each finding shows its status, source location, evidence, and suggestion when available. The CLI prints the report path; exit code `1` means the run is incomplete even if findings were produced.
 
@@ -404,4 +475,4 @@ LaTeX analysis handles common commands, comments (including escaped percent sign
 
 ## Privacy
 
-Hosted providers and installed CLI clients receive semantic-review prompts, selected context, and manuscript target text when those rules run, including chunks and synthesis excerpts for large reviews. Ollama can keep inference local when configured locally; a CLI provider's data handling depends on the signed-in account and selected model service. Reports include manuscript text in the target hierarchy, even for unselected scopes. Keep API keys in environment variables and never in guideline files.
+`advisor-review compile` sends only guideline text, its heading, and the rule format to the selected CLI; it never sends manuscript text. Semantic example tests send the example texts in the rule. Hosted providers and installed CLI clients receive semantic-review prompts, selected context, and manuscript target text when those rules run, including chunks and synthesis excerpts for large reviews. Ollama can keep inference local when configured locally; a CLI provider's data handling depends on the signed-in account and selected model service. Reports include manuscript text in the target hierarchy, even for unselected scopes. Keep API keys in environment variables and never in guideline files.
